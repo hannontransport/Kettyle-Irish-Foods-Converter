@@ -83,33 +83,27 @@ def convert_excel_to_xml(excel_path, xml_output_path):
             logger.warning("Excel file is empty. Skipping.")
             return
 
-        # Create XML root
         root = ET.Element('transportbookings')
         booking_el = ET.SubElement(root, 'transportbooking')
 
-        # The first 'Reference' at top-level = transportbooking reference
         overall_ref = clean_text(df.iloc[0].get('Reference'))
         if overall_ref:
             ET.SubElement(booking_el, 'reference').text = overall_ref
 
-        # Add all rows as shipments
         shipments_el = ET.SubElement(booking_el, 'shipments')
 
         for _, row in df.iterrows():
             shipment_el = ET.SubElement(shipments_el, 'shipment')
 
-            # Shipment-level reference
             shipment_ref = clean_text(row.get('Reference'))
             if shipment_ref:
                 ET.SubElement(shipment_el, 'reference').text = shipment_ref
 
-            # Pickup section
             pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
             ET.SubElement(pickup_el, 'address_id').text = clean_text(row.get('COLLECTION REFERENCE'))
             ET.SubElement(pickup_el, 'date').text = clean_text(row.get('LOADING'))
             ET.SubElement(pickup_el, 'name').text = clean_text(row.get('COLLECTION NAME & ADDRESS *'))
 
-            # Delivery section
             delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
             ET.SubElement(delivery_el, 'date').text = clean_text(row.get('UNLOADING'))
             ET.SubElement(delivery_el, 'address_id').text = clean_text(row.get('COLLECTION REFERENCE'))
@@ -117,7 +111,6 @@ def convert_excel_to_xml(excel_path, xml_output_path):
             ET.SubElement(delivery_el, 'city_id').text = clean_text(row.get('DELIVERY CITY'))
             ET.SubElement(delivery_el, 'deliverytime').text = clean_text(row.get('DELIVERY TIME'))
 
-            # Cargo section
             cargo_el = ET.SubElement(shipment_el, 'cargo')
             ET.SubElement(cargo_el, 'product_id').text = clean_text(row.get('GOODS DESCRIPTION'))
 
@@ -126,7 +119,6 @@ def convert_excel_to_xml(excel_path, xml_output_path):
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
                 ET.SubElement(cargo_el, 'unitamount').text = euro_val
 
-        # Write XML file
         tree = ET.ElementTree(root)
         tree.write(xml_output_path, encoding='utf-8', xml_declaration=True)
         logger.info(f"XML created successfully: {xml_output_path}")
@@ -156,12 +148,21 @@ def move_file(ftp, from_path, to_directory):
         new_file_name = f"{timestamp}_{file_name}"
         to_path = f"{to_directory}/{new_file_name}"
         ftp.rename(from_path, to_path)
+        time.sleep(1)  
     except Exception as e:
         logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
         send_email("Kettyle Irish Foods EDI - File Move Failed",f"Failed to move {file_name} to {to_directory}")
 
 def download_file(ftp, remote_path, local_path):
     try:
+        os.makedirs(os.path.dirname(local_path), exist_ok=True)
+
+        try:
+            ftp.size(remote_path)
+        except ftplib.error_perm:
+            logger.warning(f"Remote file does not exist: {remote_path}")
+            raise FileNotFoundError(f"Remote file not found: {remote_path}")
+
         with open(local_path, 'wb') as local_file:
             ftp.retrbinary(f'RETR {remote_path}', local_file.write)
     except Exception as e:
@@ -182,6 +183,8 @@ def main():
 
     while True:
         try:
+            os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)  
+
             ftp = ftplib.FTP()
             ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
@@ -192,31 +195,33 @@ def main():
 
             if new_files:
                 logger.info(f"New files detected: {new_files}")
+
                 for file in new_files:
                     remote_path = f"{WATCH_FOLDER}/{file}"
                     local_path = os.path.join(DOWNLOAD_FOLDER, file)
 
                     try:
-                        # Download
                         logger.info(f"Downloading {file}")
                         download_file(ftp, remote_path, local_path)
 
-                        # Convert to XML
                         xml_output_path = os.path.splitext(local_path)[0] + ".xml"
                         convert_excel_to_xml(local_path, xml_output_path)
 
-                        # Upload XML
                         upload_path = f"{UPLOAD_FOLDER}/{os.path.basename(xml_output_path)}"
                         logger.info(f"Uploading XML: {upload_path}")
                         upload_file(ftp, xml_output_path, upload_path)
 
-                        # Move original Excel to processed folder
                         move_file(ftp, remote_path, PROCESSED_FOLDER)
 
                     except Exception as e:
                         logger.error(f"Processing error for {file}: {e}")
-                        move_file(ftp, remote_path, ERROR_FOLDER)
-                        break
+                        try:
+                            move_file(ftp, remote_path, ERROR_FOLDER)
+                        except Exception as move_err:
+                            logger.error(f"Failed to move errored file {file}: {move_err}")
+                        continue  
+
+                current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             else:
                 logger.info("No new files detected.")
 
@@ -226,7 +231,10 @@ def main():
             logger.error(f"Unexpected error: {e}")
             send_email("Kettyle Irish Foods EDI - Unexpected Error","Unexpected error occurred. Check logs for details.")
         finally:
-            ftp.quit()
+            try:
+                ftp.quit()
+            except Exception:
+                pass
 
         time.sleep(POLL_TIME)
 
