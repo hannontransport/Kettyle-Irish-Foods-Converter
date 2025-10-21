@@ -80,13 +80,13 @@ def convert_excel_to_xml(excel_path, xml_output_path):
             return
         root = ET.Element('transportbookings')
         booking_el = ET.SubElement(root, 'transportbooking')
-        overall_ref = clean_text(df.iloc[0].get('Reference'))
+        overall_ref = clean_text(df.iloc[0].get('DELIVERY REFERENCE') or df.iloc[0].get('CUSTOMER *'))
         if overall_ref:
             ET.SubElement(booking_el, 'reference').text = overall_ref
         shipments_el = ET.SubElement(booking_el, 'shipments')
         for _, row in df.iterrows():
             shipment_el = ET.SubElement(shipments_el, 'shipment')
-            shipment_ref = clean_text(row.get('Reference'))
+            shipment_ref = clean_text(row.get('DELIVERY REFERENCE') or row.get('CUSTOMER *'))
             if shipment_ref:
                 ET.SubElement(shipment_el, 'reference').text = shipment_ref
             pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
@@ -95,7 +95,7 @@ def convert_excel_to_xml(excel_path, xml_output_path):
             ET.SubElement(pickup_el, 'name').text = clean_text(row.get('COLLECTION NAME & ADDRESS *'))
             delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
             ET.SubElement(delivery_el, 'date').text = clean_text(row.get('UNLOADING'))
-            ET.SubElement(delivery_el, 'address_id').text = clean_text(row.get('COLLECTION REFERENCE'))
+            ET.SubElement(delivery_el, 'address_id').text = clean_text(row.get('DELIVERY REFERENCE'))
             ET.SubElement(delivery_el, 'address1').text = clean_text(row.get('DELIVERY NAME & ADDRESS'))
             ET.SubElement(delivery_el, 'city_id').text = clean_text(row.get('DELIVERY CITY'))
             ET.SubElement(delivery_el, 'deliverytime').text = clean_text(row.get('DELIVERY TIME'))
