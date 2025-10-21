@@ -20,3 +20,4 @@ class Config:
     SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
     FROM_EMAIL = os.environ.get('FROM_EMAIL')
     TO_EMAIL = os.environ.get('TO_EMAIL')
+    COLUMNS_FILE = os.environ.get('COLUMNS_FILE')
