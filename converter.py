@@ -71,22 +71,29 @@ def find_header_row(excel_path):
 
 def convert_excel_to_xml(excel_path, xml_output_path):
     try:
-        header_row = find_header_row(excel_path)
-        logger.info(f"Reading Excel file: {excel_path} (header row {header_row})")
-        df = pd.read_excel(excel_path, sheet_name='Blad1', engine='openpyxl', header=header_row)
+        logger.info(f"Reading Excel file: {excel_path}")
+        booking_ref = ''
+        ref_df = pd.read_excel(excel_path, sheet_name='Blad1', engine='openpyxl', header=None, nrows=2, usecols='C')
+        if not ref_df.empty:
+            val = str(ref_df.iloc[1, 0]).strip()
+            if val:
+                booking_ref = val
+        df = pd.read_excel(excel_path, sheet_name='Blad1', engine='openpyxl', header=4)
         df.fillna('', inplace=True)
         if df.empty:
             logger.warning("Excel file is empty. Skipping.")
             return
+        df = df[df['COLLECTION REFERENCE'] != '']
         root = ET.Element('transportbookings')
         booking_el = ET.SubElement(root, 'transportbooking')
-        overall_ref = clean_text(df.iloc[0].get('DELIVERY REFERENCE') or df.iloc[0].get('CUSTOMER *'))
-        if overall_ref:
-            ET.SubElement(booking_el, 'reference').text = overall_ref
+        if booking_ref:
+            ET.SubElement(booking_el, 'reference').text = booking_ref
         shipments_el = ET.SubElement(booking_el, 'shipments')
         for _, row in df.iterrows():
+            if not any(str(v).strip() for v in row.values):
+                continue
             shipment_el = ET.SubElement(shipments_el, 'shipment')
-            shipment_ref = clean_text(row.get('DELIVERY REFERENCE') or row.get('CUSTOMER *'))
+            shipment_ref = clean_text(row.get('DELIVERY REFERENCE') or row.get('CUSTOMER *') or booking_ref)
             if shipment_ref:
                 ET.SubElement(shipment_el, 'reference').text = shipment_ref
             pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
@@ -112,6 +119,7 @@ def convert_excel_to_xml(excel_path, xml_output_path):
         logger.error(f"Error converting Excel to XML: {e}")
         send_email("Kettyle Irish Foods EDI - Conversion Failed", f"Error converting {os.path.basename(excel_path)}. Check logs for details.")
         raise
+
 
 def list_xlsx_files(ftp, directory):
     file_list = []
