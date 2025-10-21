@@ -29,17 +29,26 @@ FROM_EMAIL = Config.FROM_EMAIL
 TO_EMAIL = Config.TO_EMAIL
 COLUMNS_FILE = Config.COLUMNS_FILE
 
+
 def setup_logger():
     if not os.path.exists('logs'):
         os.makedirs('logs')
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = TimedRotatingFileHandler('logs/Kettyle Irish Foodsconverter.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
+    handler = TimedRotatingFileHandler(
+        'logs/KettyleIrishFoodsConverter.log',
+        when='midnight',
+        interval=1,
+        backupCount=30,
+        encoding='utf-8'
+    )
     handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
     logger.addHandler(handler)
     return logger
 
+
 logger = setup_logger()
+
 
 def send_email(subject, body):
     try:
@@ -56,24 +65,48 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}")
 
+
 def clean_text(value):
     return str(value).strip() if pd.notna(value) else ''
+
 
 def load_mapping(csv_path):
     df = pd.read_csv(csv_path)
     df.columns = df.columns.str.strip().str.lower()
     mappings = {}
     for _, row in df.iterrows():
-        section, tag, source = row['section'].strip().lower(), row['tag'].strip(), row['source'].strip()
+        section = clean_text(row['section']).lower()
+        tag = clean_text(row['tag'])
+        source = clean_text(row['source']).upper()  # normalize to uppercase
         if section not in mappings:
             mappings[section] = []
         mappings[section].append({'tag': tag, 'source': source})
     return mappings
 
+
+def indent(elem, level=0):
+    """Nicely format XML output with indentation."""
+    i = "\n" + level * "  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        for child in elem:
+            indent(child, level + 1)
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
+
+
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     mappings = load_mapping(mapping_csv)
     df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=4)
     df.fillna('', inplace=True)
+
+    # Normalize columns to uppercase
+    df.columns = df.columns.str.strip().str.upper()
+    logger.info(f"Detected Excel columns: {list(df.columns)}")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
@@ -85,6 +118,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         ref_value = clean_text(excel_top.iat[1, 2])
     except Exception as e:
         logger.warning(f"Could not read header reference (C2): {e}")
+
     if ref_value:
         ET.SubElement(booking_el, 'reference').text = ref_value
 
@@ -117,9 +151,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
 
+    indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
+
 
 def list_xlsx_files(ftp, directory):
     files = []
@@ -130,6 +166,7 @@ def list_xlsx_files(ftp, directory):
         logger.error(f"Error listing files: {e}")
         send_email("Kettyle Irish Foods EDI - File Listing Failed", f"Error listing files in {directory}.")
     return files
+
 
 def move_file(ftp, from_path, to_directory):
     try:
@@ -142,6 +179,7 @@ def move_file(ftp, from_path, to_directory):
         logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
         send_email("Kettyle Irish Foods EDI - File Move Failed", f"Failed to move {file_name} to {to_directory}")
 
+
 def download_file(ftp, remote_path, local_path):
     try:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -152,6 +190,7 @@ def download_file(ftp, remote_path, local_path):
         send_email("Kettyle Irish Foods EDI - File Download Failed", f"Failed to download {remote_path}")
         raise
 
+
 def upload_file(ftp, local_path, remote_path):
     try:
         with open(local_path, 'rb') as f:
@@ -159,6 +198,7 @@ def upload_file(ftp, local_path, remote_path):
     except Exception as e:
         logger.error(f"Error uploading {local_path}: {e}")
         send_email("Kettyle Irish Foods EDI - File Upload Failed", f"Failed to upload {local_path}")
+
 
 def main():
     previous_files = []
@@ -200,6 +240,7 @@ def main():
             except:
                 pass
         time.sleep(POLL_TIME)
+
 
 if __name__ == "__main__":
     main()
