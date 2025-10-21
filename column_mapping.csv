@@ -1,0 +1,12 @@
+﻿section,tag,source
+header,reference,Cell C2
+pickup,address_id,COLLECTION REFERENCE
+pickup,name,COLLECTION NAME & ADDRESS *
+pickup,date,LOADING
+delivery,address_id,DELIVERY REFERENCE
+delivery,address1,DELIVERY NAME & ADDRESS
+delivery,city_id,DELIVERY CITY
+delivery,deliverytime,DELIVERY TIME
+delivery,date,UNLOADING
+cargo,product_id,GOODS DESCRIPTION
+cargo,unitamount,EURO PALLET *

@@ -3,15 +3,13 @@ import time
 import logging
 from datetime import datetime
 import ftplib
+import pandas as pd
+import xml.etree.ElementTree as ET
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-import pandas as pd
-import xml.etree.ElementTree as ET
 from logging.handlers import TimedRotatingFileHandler
 from config import Config
-import math
-import re
 
 WATCH_FOLDER = Config.WATCH_FOLDER
 PROCESSED_FOLDER = Config.PROCESSED_FOLDER
@@ -28,17 +26,20 @@ SMTP_PORT = Config.SMTP_PORT
 SMTP_USERNAME = Config.SMTP_USERNAME
 SMTP_PASSWORD = Config.SMTP_PASSWORD
 FROM_EMAIL = Config.FROM_EMAIL
-TO_EMAIL = Config.FROM_EMAIL
+TO_EMAIL = Config.TO_EMAIL
+COLUMNS_FILE = Config.COLUMNS_FILE
 
-if not os.path.exists('logs'):
-    os.makedirs('logs/')
+def setup_logger():
+    if not os.path.exists('logs'):
+        os.makedirs('logs')
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    handler = TimedRotatingFileHandler('logs/Kettyle Irish Foodsconverter.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+    logger.addHandler(handler)
+    return logger
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-handler = TimedRotatingFileHandler('logs/KettyleIrishFoodsConverter.log', when='midnight', interval=1, backupCount=30, encoding='utf-8')
-formatter = logging.Formatter('%(asctime)s %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+logger = setup_logger()
 
 def send_email(subject, body):
     try:
@@ -56,83 +57,79 @@ def send_email(subject, body):
         logger.error(f"Email send failed: {e}")
 
 def clean_text(value):
-    if value is None:
-        return ''
-    if isinstance(value, float) and math.isnan(value):
-        return ''
-    return str(value).strip()
+    return str(value).strip() if pd.notna(value) else ''
 
-def find_header_row(excel_path):
-    temp_df = pd.read_excel(excel_path, sheet_name='Blad1', header=None, engine='openpyxl')
-    for i, row in temp_df.iterrows():
-        if any(re.search(r'REFERENCE', str(cell), re.I) for cell in row):
-            return i
-    return 0
+def load_mapping(csv_path):
+    df = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip().str.lower()
+    mappings = {}
+    for _, row in df.iterrows():
+        section, tag, source = row['section'].strip().lower(), row['tag'].strip(), row['source'].strip()
+        if section not in mappings:
+            mappings[section] = []
+        mappings[section].append({'tag': tag, 'source': source})
+    return mappings
 
-def convert_excel_to_xml(excel_path, xml_output_path):
+def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
+    mappings = load_mapping(mapping_csv)
+    df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=4)
+    df.fillna('', inplace=True)
+
+    root = ET.Element('transportbookings')
+    booking_el = ET.SubElement(root, 'transportbooking')
+
+    # Read top-level reference from C2
+    ref_value = ''
     try:
-        logger.info(f"Reading Excel file: {excel_path}")
-        booking_ref = ''
-        ref_df = pd.read_excel(excel_path, sheet_name='Blad1', engine='openpyxl', header=None, nrows=2, usecols='C')
-        if not ref_df.empty:
-            val = str(ref_df.iloc[1, 0]).strip()
-            if val:
-                booking_ref = val
-        df = pd.read_excel(excel_path, sheet_name='Blad1', engine='openpyxl', header=4)
-        df.fillna('', inplace=True)
-        if df.empty:
-            logger.warning("Excel file is empty. Skipping.")
-            return
-        df = df[df['COLLECTION REFERENCE'] != '']
-        root = ET.Element('transportbookings')
-        booking_el = ET.SubElement(root, 'transportbooking')
-        if booking_ref:
-            ET.SubElement(booking_el, 'reference').text = booking_ref
-        shipments_el = ET.SubElement(booking_el, 'shipments')
-        for _, row in df.iterrows():
-            if not any(str(v).strip() for v in row.values):
-                continue
-            shipment_el = ET.SubElement(shipments_el, 'shipment')
-            shipment_ref = clean_text(row.get('DELIVERY REFERENCE') or row.get('CUSTOMER *') or booking_ref)
-            if shipment_ref:
-                ET.SubElement(shipment_el, 'reference').text = shipment_ref
-            pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
-            ET.SubElement(pickup_el, 'address_id').text = clean_text(row.get('COLLECTION REFERENCE'))
-            ET.SubElement(pickup_el, 'date').text = clean_text(row.get('LOADING'))
-            ET.SubElement(pickup_el, 'name').text = clean_text(row.get('COLLECTION NAME & ADDRESS *'))
-            delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
-            ET.SubElement(delivery_el, 'date').text = clean_text(row.get('UNLOADING'))
-            ET.SubElement(delivery_el, 'address_id').text = clean_text(row.get('DELIVERY REFERENCE'))
-            ET.SubElement(delivery_el, 'address1').text = clean_text(row.get('DELIVERY NAME & ADDRESS'))
-            ET.SubElement(delivery_el, 'city_id').text = clean_text(row.get('DELIVERY CITY'))
-            ET.SubElement(delivery_el, 'deliverytime').text = clean_text(row.get('DELIVERY TIME'))
-            cargo_el = ET.SubElement(shipment_el, 'cargo')
-            ET.SubElement(cargo_el, 'product_id').text = clean_text(row.get('GOODS DESCRIPTION'))
-            euro_val = clean_text(row.get('EURO PALLET *'))
-            if euro_val:
-                ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
-                ET.SubElement(cargo_el, 'unitamount').text = euro_val
-        tree = ET.ElementTree(root)
-        tree.write(xml_output_path, encoding='utf-8', xml_declaration=True)
-        logger.info(f"XML created successfully: {xml_output_path}")
+        excel_top = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=None, nrows=2)
+        ref_value = clean_text(excel_top.iat[1, 2])
     except Exception as e:
-        logger.error(f"Error converting Excel to XML: {e}")
-        send_email("Kettyle Irish Foods EDI - Conversion Failed", f"Error converting {os.path.basename(excel_path)}. Check logs for details.")
-        raise
+        logger.warning(f"Could not read header reference (C2): {e}")
+    if ref_value:
+        ET.SubElement(booking_el, 'reference').text = ref_value
 
+    shipments_el = ET.SubElement(booking_el, 'shipments')
+
+    for _, row in df.iterrows():
+        shipment_el = ET.SubElement(shipments_el, 'shipment')
+
+        # Pickup
+        pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
+        for m in mappings.get('pickup', []):
+            val = clean_text(row.get(m['source']))
+            if val:
+                ET.SubElement(pickup_el, m['tag']).text = val
+
+        # Delivery
+        delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
+        for m in mappings.get('delivery', []):
+            val = clean_text(row.get(m['source']))
+            if val:
+                ET.SubElement(delivery_el, m['tag']).text = val
+
+        # Cargo
+        cargo_el = ET.SubElement(shipment_el, 'cargo')
+        for m in mappings.get('cargo', []):
+            val = clean_text(row.get(m['source']))
+            if not val:
+                continue
+            if m['tag'] == 'unitamount':
+                ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
+            ET.SubElement(cargo_el, m['tag']).text = val
+
+    tree = ET.ElementTree(root)
+    tree.write(output_xml, encoding='utf-8', xml_declaration=True)
+    logger.info(f"XML written successfully: {output_xml}")
 
 def list_xlsx_files(ftp, directory):
-    file_list = []
+    files = []
     try:
         ftp.cwd(directory)
-        files = ftp.nlst()
-        for f in files:
-            if f.lower().endswith('.xlsx'):
-                file_list.append(f)
+        files = [f for f in ftp.nlst() if f.lower().endswith('.xlsx')]
     except Exception as e:
         logger.error(f"Error listing files: {e}")
         send_email("Kettyle Irish Foods EDI - File Listing Failed", f"Error listing files in {directory}.")
-    return file_list
+    return files
 
 def move_file(ftp, from_path, to_directory):
     try:
@@ -141,7 +138,6 @@ def move_file(ftp, from_path, to_directory):
         new_file_name = f"{timestamp}_{file_name}"
         to_path = f"{to_directory}/{new_file_name}"
         ftp.rename(from_path, to_path)
-        time.sleep(1)
     except Exception as e:
         logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
         send_email("Kettyle Irish Foods EDI - File Move Failed", f"Failed to move {file_name} to {to_directory}")
@@ -149,61 +145,51 @@ def move_file(ftp, from_path, to_directory):
 def download_file(ftp, remote_path, local_path):
     try:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        try:
-            ftp.size(remote_path)
-        except ftplib.error_perm:
-            logger.warning(f"Remote file does not exist: {remote_path}")
-            raise FileNotFoundError(f"Remote file not found: {remote_path}")
-        with open(local_path, 'wb') as local_file:
-            ftp.retrbinary(f'RETR {remote_path}', local_file.write)
+        with open(local_path, 'wb') as f:
+            ftp.retrbinary(f'RETR {remote_path}', f.write)
     except Exception as e:
-        logger.error(f"Error downloading file {remote_path}: {e}")
+        logger.error(f"Error downloading {remote_path}: {e}")
         send_email("Kettyle Irish Foods EDI - File Download Failed", f"Failed to download {remote_path}")
         raise
 
 def upload_file(ftp, local_path, remote_path):
     try:
-        with open(local_path, 'rb') as local_file:
-            ftp.storbinary(f'STOR {remote_path}', local_file)
+        with open(local_path, 'rb') as f:
+            ftp.storbinary(f'STOR {remote_path}', f)
     except Exception as e:
-        logger.error(f"Error uploading file {local_path}: {e}")
+        logger.error(f"Error uploading {local_path}: {e}")
         send_email("Kettyle Irish Foods EDI - File Upload Failed", f"Failed to upload {local_path}")
 
 def main():
     previous_files = []
     while True:
         try:
-            os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
             ftp = ftplib.FTP()
             ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
             ftp.set_pasv(True)
+
             current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             new_files = [f for f in current_files if f not in previous_files]
+
             if new_files:
                 logger.info(f"New files detected: {new_files}")
                 for file in new_files:
                     remote_path = f"{WATCH_FOLDER}/{file}"
                     local_path = os.path.join(DOWNLOAD_FOLDER, file)
                     try:
-                        logger.info(f"Downloading {file}")
                         download_file(ftp, remote_path, local_path)
                         xml_output_path = os.path.splitext(local_path)[0] + ".xml"
-                        convert_excel_to_xml(local_path, xml_output_path)
-                        upload_path = f"{UPLOAD_FOLDER}/{os.path.basename(xml_output_path)}"
-                        logger.info(f"Uploading XML: {upload_path}")
-                        upload_file(ftp, xml_output_path, upload_path)
+                        write_xml(local_path, xml_output_path)
+                        upload_file(ftp, xml_output_path, f"{UPLOAD_FOLDER}/{os.path.basename(xml_output_path)}")
                         move_file(ftp, remote_path, PROCESSED_FOLDER)
                     except Exception as e:
                         logger.error(f"Processing error for {file}: {e}")
-                        try:
-                            move_file(ftp, remote_path, ERROR_FOLDER)
-                        except Exception as move_err:
-                            logger.error(f"Failed to move errored file {file}: {move_err}")
-                        continue
-                current_files = list_xlsx_files(ftp, WATCH_FOLDER)
+                        move_file(ftp, remote_path, ERROR_FOLDER)
+                        break
             else:
                 logger.info("No new files detected.")
+
             previous_files = current_files
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
@@ -211,7 +197,7 @@ def main():
         finally:
             try:
                 ftp.quit()
-            except Exception:
+            except:
                 pass
         time.sleep(POLL_TIME)
 
