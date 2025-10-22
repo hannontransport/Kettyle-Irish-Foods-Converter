@@ -29,7 +29,6 @@ FROM_EMAIL = Config.FROM_EMAIL
 TO_EMAIL = Config.TO_EMAIL
 COLUMNS_FILE = Config.COLUMNS_FILE
 
-
 def setup_logger():
     if not os.path.exists('logs'):
         os.makedirs('logs')
@@ -46,9 +45,7 @@ def setup_logger():
     logger.addHandler(handler)
     return logger
 
-
 logger = setup_logger()
-
 
 def send_email(subject, body):
     try:
@@ -65,10 +62,13 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}")
 
-
 def clean_text(value):
-    return str(value).strip() if pd.notna(value) else ''
-
+    if pd.isna(value):
+        return ''
+    val = str(value).strip()
+    if val in ['#N/A', 'nan', 'NaT', 'None', '']:
+        return ''
+    return val
 
 def load_mapping(csv_path):
     df = pd.read_csv(csv_path)
@@ -77,15 +77,13 @@ def load_mapping(csv_path):
     for _, row in df.iterrows():
         section = clean_text(row['section']).lower()
         tag = clean_text(row['tag'])
-        source = clean_text(row['source']).upper()  # normalize to uppercase
+        source = clean_text(row['source']).upper()
         if section not in mappings:
             mappings[section] = []
         mappings[section].append({'tag': tag, 'source': source})
     return mappings
 
-
 def indent(elem, level=0):
-    """Nicely format XML output with indentation."""
     i = "\n" + level * "  "
     if len(elem):
         if not elem.text or not elem.text.strip():
@@ -98,7 +96,6 @@ def indent(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
-
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl
     import re
@@ -106,11 +103,14 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     mappings = load_mapping(mapping_csv)
 
-    # --- Step 1: Read Excel and identify headers ---
-    df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=4)
-    df.fillna('', inplace=True)
+    df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=3)
 
-    # --- Step 2: Normalize headers ---
+    df = df.replace(r'^\s*$', '', regex=True)
+    df = df.fillna('')
+    df = df[~(df.applymap(lambda x: str(x).strip() == '').all(axis=1))]
+
+    logger.info(f"🧹 Cleaned DataFrame — remaining rows after removing empty VLOOKUP rows: {len(df)}")
+
     def normalize_header(h):
         h = str(h).upper()
         h = re.sub(r'[^A-Z0-9]', '', h)
@@ -119,12 +119,9 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     raw_headers = list(df.columns)
     df.columns = [normalize_header(c) for c in df.columns]
 
-    logger.info(" RAW Excel headers:")
-    logger.info(raw_headers)
-    logger.info(" NORMALIZED Excel headers:")
-    logger.info(list(df.columns))
+    logger.info(f"RAW Excel headers (row 4): {raw_headers}")
+    logger.info(f"NORMALIZED Excel headers: {list(df.columns)}")
 
-    # --- Step 3: Normalize and map CSV sources ---
     for section, entries in mappings.items():
         for m in entries:
             src_clean = normalize_header(m['source'])
@@ -133,28 +130,26 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 m['source'] = match[0]
                 logger.info(f"Matched mapping: {section.upper()} → {m['tag']} = {m['source']}")
             else:
-                logger.warning(f" No header match for '{m['source']}' in section '{section}'")
+                logger.warning(f"No header match for '{m['source']}' in section '{section}'")
 
-    # --- Step 4: Setup XML root ---
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
 
-    # --- Step 5: Booking Reference from D2 ---
+    ref_value = ''
     try:
         wb = openpyxl.load_workbook(filepath, data_only=True)
         ws = wb.active
-        ref_value = clean_text(ws['D2'].value)
-        if ref_value:
-            ET.SubElement(booking_el, 'reference').text = ref_value
-            logger.info(f" Booking reference from D2: {ref_value}")
-        else:
-            logger.warning(" Booking reference (D2) is empty.")
+        ref_value = clean_text(ws['D2'].value or ws['C2'].value)
     except Exception as e:
-        logger.warning(f"Could not read D2: {e}")
+        logger.warning(f"Could not read booking reference (D2/C2): {e}")
+
+    if ref_value:
+        ET.SubElement(booking_el, 'reference').text = ref_value
+        logger.info(f"Booking reference: {ref_value}")
+    else:
+        logger.warning("No booking reference found in D2 or C2.")
 
     shipments_el = ET.SubElement(booking_el, 'shipments')
-
-    # --- Step 6: Loop through rows (each = one shipment) ---
     logger.info(f"Total shipment rows detected: {len(df)}")
 
     for i, row in df.iterrows():
@@ -163,21 +158,18 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
-        # Pickup section
         pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
         for m in mappings.get('pickup', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 ET.SubElement(pickup_el, m['tag']).text = val
 
-        # Delivery section
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
         for m in mappings.get('delivery', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 ET.SubElement(delivery_el, m['tag']).text = val
 
-        # Cargo section
         cargo_el = ET.SubElement(shipment_el, 'cargo')
         for m in mappings.get('cargo', []):
             val = clean_text(row.get(m['source'], ''))
@@ -187,28 +179,25 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
 
-        # Debug first few shipments
         if i < 3:
-            logger.info(f"Shipment row {i+6} sample data:")
+            logger.info(f"🧾 Shipment row {i + 5} preview:")
             for col, val in row.items():
                 if val:
                     logger.info(f"  {col}: {val}")
 
-    # --- Step 7: Write XML file ---
     indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
-    logger.info(f"XML created: {output_xml}")
+    logger.info(f"✅ XML written successfully: {output_xml}")
 
 def list_xlsx_files(ftp, directory):
-    files = []
     try:
         ftp.cwd(directory)
-        files = [f for f in ftp.nlst() if f.lower().endswith('.xlsx')]
+        return [f for f in ftp.nlst() if f.lower().endswith('.xlsx')]
     except Exception as e:
         logger.error(f"Error listing files: {e}")
         send_email("Kettyle Irish Foods EDI - File Listing Failed", f"Error listing files in {directory}.")
-    return files
+        return []
 
 
 def move_file(ftp, from_path, to_directory):
@@ -216,8 +205,7 @@ def move_file(ftp, from_path, to_directory):
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         file_name = os.path.basename(from_path)
         new_file_name = f"{timestamp}_{file_name}"
-        to_path = f"{to_directory}/{new_file_name}"
-        ftp.rename(from_path, to_path)
+        ftp.rename(from_path, f"{to_directory}/{new_file_name}")
     except Exception as e:
         logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
         send_email("Kettyle Irish Foods EDI - File Move Failed", f"Failed to move {file_name} to {to_directory}")
@@ -241,7 +229,6 @@ def upload_file(ftp, local_path, remote_path):
     except Exception as e:
         logger.error(f"Error uploading {local_path}: {e}")
         send_email("Kettyle Irish Foods EDI - File Upload Failed", f"Failed to upload {local_path}")
-
 
 def main():
     previous_files = []
@@ -276,14 +263,13 @@ def main():
             previous_files = current_files
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            send_email("Kettyle Irish Foods EDI - Unexpected Error", "Unexpected error occurred. Check logs for details.")
+            send_email("Kettyle Irish Foods EDI - Unexpected Error", f"Unexpected error occurred. Check logs.")
         finally:
             try:
                 ftp.quit()
             except:
                 pass
         time.sleep(POLL_TIME)
-
 
 if __name__ == "__main__":
     main()
