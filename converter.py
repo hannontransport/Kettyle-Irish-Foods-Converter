@@ -184,21 +184,34 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
-
         cargo_el = ET.SubElement(shipment_el, "cargo")
         unitid_added = False
+
         for m in mappings.get("cargo", []):
+            tag = m["tag"].lower()
             val = clean_text(row.get(m["source"], ""))
             if not val:
                 continue
-            mm = get_matchmode(m["tag"])
+
+            mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
-            if m["tag"].lower() == "unitamount" and not unitid_added:
-                unitid_added = True
+
+            # Handle unitid manually (we only add one EuroPallet)
+            if tag == "unitid":
+                if not unitid_added:
+                    unitid_added = True
+                    ET.SubElement(cargo_el, "unitid", attrib).text = "EuroPallet"
+                continue  # skip CSV-provided unitid values
+
+            # When unitamount found, ensure unitid exists before it
+            if tag == "unitamount" and not unitid_added:
                 uid_mm = get_matchmode("unitid")
                 uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
                 ET.SubElement(cargo_el, "unitid", uid_attrib).text = "EuroPallet"
+                unitid_added = True
+
             ET.SubElement(cargo_el, m["tag"], attrib).text = val
+
 
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
