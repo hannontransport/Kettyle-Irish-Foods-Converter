@@ -100,31 +100,44 @@ def indent(elem, level=0):
 
 
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
+    import openpyxl
+
     mappings = load_mapping(mapping_csv)
     df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=4)
     df.fillna('', inplace=True)
 
-    # Normalize columns to uppercase
-    df.columns = df.columns.str.strip().str.upper()
+    df.columns = df.columns.str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
     logger.info(f"Detected Excel columns: {list(df.columns)}")
+
+    # Log any missing mappings
+    for section, entries in mappings.items():
+        for m in entries:
+            if m['source'] not in df.columns:
+                logger.warning(f"Mapping source '{m['source']}' not found in Excel headers")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
 
-    # Read top-level reference from C2
     ref_value = ''
     try:
-        excel_top = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=None, nrows=2)
-        ref_value = clean_text(excel_top.iat[1, 2])
+        wb = openpyxl.load_workbook(filepath, data_only=True)
+        ws = wb.active
+        ref_value = clean_text(ws['D2'].value)
     except Exception as e:
-        logger.warning(f"Could not read header reference (C2): {e}")
+        logger.warning(f"Could not read booking reference (D2): {e}")
 
     if ref_value:
         ET.SubElement(booking_el, 'reference').text = ref_value
+        logger.info(f"Booking reference from D2: {ref_value}")
+    else:
+        logger.warning("No booking reference found in D2.")
 
     shipments_el = ET.SubElement(booking_el, 'shipments')
 
     for _, row in df.iterrows():
+        if not any(clean_text(v) for v in row.values):
+            continue
+
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
         # Pickup
@@ -147,10 +160,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             val = clean_text(row.get(m['source']))
             if not val:
                 continue
-            if m['tag'] == 'unitamount':
+            if m['tag'].lower() == 'unitamount':
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
 
+    # Pretty XML formatting
     indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
