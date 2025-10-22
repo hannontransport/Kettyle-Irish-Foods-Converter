@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from logging.handlers import TimedRotatingFileHandler
 from config import Config
 
+# --- Configuration ---
 WATCH_FOLDER = Config.WATCH_FOLDER
 PROCESSED_FOLDER = Config.PROCESSED_FOLDER
 ERROR_FOLDER = Config.ERROR_FOLDER
@@ -37,18 +38,23 @@ MATCHMODE_RULES = {
     "unit_id": "1"
 }
 
+# --- Logging setup ---
 def setup_logger():
     if not os.path.exists("logs"):
         os.makedirs("logs")
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = TimedRotatingFileHandler("logs/KettyleIrishFoodsConverter.log", when="midnight", interval=1, backupCount=30, encoding="utf-8")
+    handler = TimedRotatingFileHandler(
+        "logs/KettyleIrishFoodsConverter.log",
+        when="midnight", interval=1, backupCount=30, encoding="utf-8"
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     logger.addHandler(handler)
     return logger
 
 logger = setup_logger()
 
+# --- Email utility ---
 def send_email(subject, body):
     try:
         msg = MIMEMultipart()
@@ -64,6 +70,7 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}")
 
+# --- Helpers ---
 def clean_text(value):
     import datetime
     if pd.isna(value) or str(value).strip() in ["", "nan", "NaT", "None", "#N/A"]:
@@ -86,15 +93,11 @@ def load_mapping(csv_path):
         if section and tag and source:
             if section not in mappings:
                 mappings[section] = []
-            mappings[section].append({
-                "tag": tag,
-                "source": source
-            })
+            mappings[section].append({"tag": tag, "source": source})
     return mappings
 
 def get_matchmode(tag):
-    tag_lower = tag.lower()
-    return MATCHMODE_RULES.get(tag_lower, "")
+    return MATCHMODE_RULES.get(tag.lower(), "")
 
 def indent(elem, level=0):
     i = "\n" + level * "  "
@@ -109,26 +112,29 @@ def indent(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
+# --- Main XML creation ---
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
 
     mappings = load_mapping(mapping_csv)
-    df = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
-    df = df.replace(r"^\s*$", "", regex=True).fillna("")
+    df_raw = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
+    df = df_raw.replace(r"^\s*$", "", regex=True).fillna("")
     df = df[~(df.applymap(lambda x: str(x).strip() == "").all(axis=1))]
 
-    def normalize(h):
-        return re.sub(r"[^A-Z0-9]", "", str(h).upper())
-
+    def normalize(h): return re.sub(r"[^A-Z0-9]", "", str(h).upper())
     df.columns = [normalize(c) for c in df.columns]
+
+    # Keep mapping normalized -> raw header text
+    norm_to_raw = {normalize(c): str(c).strip() for c in df_raw.columns}
+
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
 
     root = ET.Element("transportbookings")
     booking_el = ET.SubElement(root, "transportbooking")
-
     header_reference = ""
 
+    # --- Header section ---
     for m in mappings.get("header", []):
         tag = m["tag"]
         src = m["source"].upper()
@@ -143,7 +149,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             val = clean_text(src)
         if val:
             if tag.lower() == "reference":
-                header_reference = val 
+                header_reference = val
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
             ET.SubElement(booking_el, tag, attrib).text = val
@@ -153,6 +159,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
+    # --- Shipment reference mapping ---
     shipment_ref_col = None
     ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
     if ref_map:
@@ -167,9 +174,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     key_columns = [c for c in ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"] if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
 
+    # --- Identify unit columns dynamically ---
+    unit_columns = [c for c in df.columns if "PALLET" in c or "UNIT" in c]
+
     for _, row in df_valid.iterrows():
         shipment_el = ET.SubElement(shipments_el, "shipment")
-        shipment_ref = ""
 
         if shipment_ref_col:
             shipment_ref = clean_text(row.get(shipment_ref_col, ""))
@@ -177,54 +186,54 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(shipment_el, "reference").text = shipment_ref
                 ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
+        # Pickup
         pickup_el = ET.SubElement(shipment_el, "pickupaddress")
         for m in mappings.get("pickup", []):
-            val = clean_text(row.get(m["source"], ""))
+            src_norm = normalize(m["source"])
+            val = clean_text(row.get(src_norm, ""))
             if val:
                 mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(pickup_el, m["tag"], attrib).text = val
 
+        # Delivery
         delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
         for m in mappings.get("delivery", []):
-            val = clean_text(row.get(m["source"], ""))
+            src_norm = normalize(m["source"])
+            val = clean_text(row.get(src_norm, ""))
             if val:
                 mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
+        # Cargo
         cargo_el = ET.SubElement(shipment_el, "cargo")
 
-        try:
-            unit_id_header = clean_text(df.columns[11]) 
-        except Exception:
-            unit_id_header = "EUROPALLET"
-
+        # Product
         for m in mappings.get("cargo", []):
-            tag = m["tag"].lower().strip()
-            val = clean_text(row.get(m["source"], ""))
-            if not val:
-                continue
+            if m["tag"].lower() == "product_id":
+                src_norm = normalize(m["source"])
+                val = clean_text(row.get(src_norm, ""))
+                if val:
+                    mm = get_matchmode("product_id")
+                    ET.SubElement(cargo_el, "product_id", {"matchmode": mm}).text = val
+                break
 
-            mm = get_matchmode(tag)
-            attrib = {"matchmode": mm} if mm else {}
-
-            if tag == "unit_id":
-                ET.SubElement(cargo_el, "unit_id", attrib).text = unit_id_header
-                continue
-
-            if tag == "unitamount":
-                if not any(c.tag == "unit_id" for c in cargo_el):
-                    uid_mm = get_matchmode("unit_id")
-                    uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
-                    ET.SubElement(cargo_el, "unit_id", uid_attrib).text = unit_id_header
-
-            ET.SubElement(cargo_el, m["tag"], attrib).text = val
+        # Unit column detection
+        for col in unit_columns:
+            cell_val = clean_text(row.get(col, ""))
+            if cell_val:
+                unit_header = norm_to_raw.get(col, col)
+                mm = get_matchmode("unit_id")
+                ET.SubElement(cargo_el, "unit_id", {"matchmode": mm}).text = unit_header
+                ET.SubElement(cargo_el, "unitamount").text = cell_val
+                break  # use first matching unit column only
 
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
 
+# --- FTP utils ---
 def list_xlsx_files(ftp, directory):
     files = []
     def parse_line(line):
@@ -236,9 +245,8 @@ def list_xlsx_files(ftp, directory):
     try:
         ftp.cwd(directory)
         ftp.retrlines("MLSD", parse_line)
-    except Exception as e:
-        logger.error(f"Error listing files: {str(e)}")
-        send_email("Kettyle EDI - File Listing Failed", "Error listing files on FTP.")
+    except Exception:
+        files = [f for f in ftp.nlst() if f.lower().endswith(".xlsx")]
     return files
 
 def move_file(ftp, from_path, to_directory):
@@ -268,6 +276,7 @@ def upload_file(ftp, local_path, remote_path):
         logger.error(f"Error uploading {local_path}: {str(e)}")
         send_email("Kettyle EDI - File Upload Failed", f"Could not upload {local_path}.")
 
+# --- Main loop ---
 def main():
     previous_files = []
     while True:
@@ -278,6 +287,7 @@ def main():
             ftp.set_pasv(True)
             current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             new_files = [f for f in current_files if f not in previous_files]
+
             if new_files:
                 logger.info(f"New files detected: {new_files}")
                 for file in new_files:
@@ -298,7 +308,7 @@ def main():
             previous_files = current_files
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}")
-            send_email("Kettyle EDI - Unexpected Error", "Unexpected error. Check logs for details.")
+            send_email("Kettyle EDI - Unexpected Error", f"Unexpected error occurred: {str(e)}")
         finally:
             try:
                 ftp.quit()
