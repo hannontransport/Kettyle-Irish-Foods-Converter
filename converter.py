@@ -111,7 +111,6 @@ def indent(elem, level=0):
 
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
-    from difflib import get_close_matches
 
     mappings = load_mapping(mapping_csv)
     df = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
@@ -195,10 +194,10 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
         cargo_el = ET.SubElement(shipment_el, "cargo")
-        unitid_added = False
+        unit_id_added = False
 
         for m in mappings.get("cargo", []):
-            tag = m["tag"].lower()
+            tag = m["tag"].lower().strip()
             val = clean_text(row.get(m["source"], ""))
             if not val:
                 continue
@@ -206,18 +205,19 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
 
-            if tag == "unitid":
-                if not unitid_added:
-                    unitid_added = True
-                    ET.SubElement(cargo_el, "unitid", attrib).text = "EuroPallet"
-                continue
+            if tag == "unit_id":
+                if not unit_id_added:
+                    unit_id_added = True
+                    ET.SubElement(cargo_el, "unit_id", attrib).text = "EuroPallet"
+                continue  
 
-            if tag == "unitamount" and not unitid_added:
-                uid_mm = get_matchmode("unitid")
+            if tag == "unitamount" and not unit_id_added:
+                unit_id_added = True
+                uid_mm = get_matchmode("unit_id")
                 uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
-                ET.SubElement(cargo_el, "unitid", uid_attrib).text = "EuroPallet"
-                unitid_added = True
+                ET.SubElement(cargo_el, "unit_id", uid_attrib).text = "EuroPallet"
 
+            ET.SubElement(cargo_el, m["tag"], attrib).text = val
             ET.SubElement(cargo_el, m["tag"], attrib).text = val
 
     indent(root)
