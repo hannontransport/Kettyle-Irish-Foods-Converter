@@ -1,12 +1,12 @@
 ﻿section,tag,source
-header,reference,CELL C2
-pickup,address_id,COLLECTION REFERENCE
-pickup,name,COLLECTION NAME & ADDRESS *
+header,reference,CELL D2
+pickup,address_id,COLLECTIONREFERENCE
+pickup,name,COLLECTIONNAMEANDADDRESS
 pickup,date,LOADING
-delivery,address_id,DELIVERY REFERENCE
-delivery,address1,DELIVERY NAME & ADDRESS
-delivery,city_id,DELIVERY CITY
-delivery,deliverytime,DELIVERY TIME
+delivery,address_id,DELIVERYREFERENCE
+delivery,address1,DELIVERYNAMEANDADDRESS
+delivery,city_id,DELIVERYCITY
+delivery,deliverytime,DELIVERYTIME
 delivery,date,UNLOADING
-cargo,product_id,GOODS DESCRIPTION
-cargo,unitamount,EURO PALLET *
+cargo,product_id,GOODSDESCRIPTION
+cargo,unitamount,EUROPALLET
