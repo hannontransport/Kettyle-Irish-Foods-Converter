@@ -115,6 +115,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     from difflib import get_close_matches
 
     mappings = load_mapping(mapping_csv)
+
     df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=3)
     df = df.replace(r'^\s*$', '', regex=True)
     df = df.fillna('')
@@ -132,8 +133,12 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     for section, entries in mappings.items():
         for m in entries:
-            src_clean = normalize_header(m['source'])
-            match = get_close_matches(src_clean, df.columns, n=1, cutoff=0.7)
+            src = normalize_header(m['source'])
+            if src.startswith("CELL"):
+                continue  
+            if src.startswith("COLUMN"):
+                continue  
+            match = get_close_matches(src, df.columns, n=1, cutoff=0.7)
             if match:
                 m['source'] = match[0]
             else:
@@ -142,45 +147,51 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
 
-    ET.SubElement(booking_el, 'customer_id', {'matchmode': '1'}).text = 'KettyleFoods'
+    header_mappings = mappings.get('header', [])
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
+    for m in header_mappings:
+        tag = m['tag'].lower()
+        matchmode = clean_text(m.get('matchmode', ''))
+        value = ''
 
-    ref_value = ''
-    try:
-        wb = openpyxl.load_workbook(filepath, data_only=True)
-        ws = wb.active
-        ref_value = clean_text(ws['D2'].value or ws['C2'].value)
-    except Exception as e:
-        logger.warning(f"Could not read booking reference (D2/C2): {e}")
+        if m['source'].upper().startswith("CELL"):
+            cell_ref = m['source'].split()[-1]
+            try:
+                value = clean_text(ws[cell_ref].value)
+            except Exception as e:
+                logger.warning(f"Could not read header cell {cell_ref}: {e}")
+        else:
+            value = clean_text(m['source'])  
 
-    if ref_value:
-        ET.SubElement(booking_el, 'reference').text = ref_value
-        logger.info(f"Booking reference: {ref_value}")
+        if value:
+            attrib = {'matchmode': matchmode} if matchmode else {}
+            ET.SubElement(booking_el, tag, attrib).text = value
+
+    shipments_el = ET.SubElement(booking_el, 'shipments')
+
+    shipment_ref_map = next((m for m in mappings.get('shipment', []) if m['tag'].lower() == 'reference'), None)
+    shipment_ref_col = None
+    if shipment_ref_map:
+        src = shipment_ref_map['source'].upper()
+        if src.startswith("COLUMN"):
+            col_letter = src.split()[-1].strip()
+            col_idx = ord(col_letter) - ord('A')
+            shipment_ref_col = df.columns[col_idx] if len(df.columns) > col_idx else None
+        else:
+            shipment_ref_col = normalize_header(src)
 
     key_columns = ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION']
     key_columns = [c for c in key_columns if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
     logger.info(f"Valid shipment rows: {len(df_valid)} (out of {len(df)})")
 
-    match_modes = {
-        'address_id': '1',
-        'city_id': '4',
-        'unitid': '1',
-        'product_id': '1',
-        'customer_id': '1'
-    }
-
-    shipments_el = ET.SubElement(booking_el, 'shipments')
-
     for _, row in df_valid.iterrows():
-        if not any(clean_text(v) for v in row.values):
-            continue
-
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
-        delivery_ref_col = next(
-            (m['source'] for m in mappings.get('delivery', []) if m['tag'].lower() == 'address_id'), None
-        )
-        shipment_ref = clean_text(row.get(delivery_ref_col, ''))
+        shipment_ref = ''
+        if shipment_ref_col:
+            shipment_ref = clean_text(row.get(shipment_ref_col, ''))
         if shipment_ref:
             ET.SubElement(shipment_el, 'reference').text = shipment_ref
 
@@ -189,8 +200,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 attrib = {}
-                if m['tag'].lower() in match_modes:
-                    attrib['matchmode'] = match_modes[m['tag'].lower()]
+                if m.get('matchmode'):
+                    attrib['matchmode'] = clean_text(m['matchmode'])
                 ET.SubElement(pickup_el, m['tag'], attrib).text = val
 
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
@@ -198,8 +209,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 attrib = {}
-                if m['tag'].lower() in match_modes:
-                    attrib['matchmode'] = match_modes[m['tag'].lower()]
+                if m.get('matchmode'):
+                    attrib['matchmode'] = clean_text(m['matchmode'])
                 ET.SubElement(delivery_el, m['tag'], attrib).text = val
 
         cargo_el = ET.SubElement(shipment_el, 'cargo')
@@ -208,8 +219,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             if not val:
                 continue
             attrib = {}
-            if m['tag'].lower() in match_modes:
-                attrib['matchmode'] = match_modes[m['tag'].lower()]
+            if m.get('matchmode'):
+                attrib['matchmode'] = clean_text(m['matchmode'])
             if m['tag'].lower() == 'unitamount':
                 ET.SubElement(cargo_el, 'unitid', attrib).text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag'], attrib).text = val
@@ -218,7 +229,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
-
 
 def list_xlsx_files(ftp, directory):
     try:
