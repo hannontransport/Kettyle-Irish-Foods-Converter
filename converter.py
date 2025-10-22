@@ -119,7 +119,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     df = df.replace(r'^\s*$', '', regex=True)
     df = df.fillna('')
     df = df[~(df.applymap(lambda x: str(x).strip() == '').all(axis=1))]
-    logger.info(f"Cleaned DataFrame — remaining rows after removing empty VLOOKUP rows: {len(df)}")
 
     def normalize_header(h):
         h = str(h).upper()
@@ -137,12 +136,13 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             match = get_close_matches(src_clean, df.columns, n=1, cutoff=0.7)
             if match:
                 m['source'] = match[0]
-                logger.info(f"Matched mapping: {section.upper()} → {m['tag']} = {m['source']}")
             else:
                 logger.warning(f"No header match for '{m['source']}' in section '{section}'")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
+
+    ET.SubElement(booking_el, 'customer_id', {'matchmode': '1'}).text = 'KettyleFoods'
 
     ref_value = ''
     try:
@@ -155,13 +155,19 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     if ref_value:
         ET.SubElement(booking_el, 'reference').text = ref_value
         logger.info(f"Booking reference: {ref_value}")
-    else:
-        logger.warning("No booking reference found in D2 or C2.")
 
     key_columns = ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION']
     key_columns = [c for c in key_columns if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
     logger.info(f"Valid shipment rows: {len(df_valid)} (out of {len(df)})")
+
+    match_modes = {
+        'address_id': '1',
+        'city_id': '4',
+        'unitid': '1',
+        'product_id': '1',
+        'customer_id': '1'
+    }
 
     shipments_el = ET.SubElement(booking_el, 'shipments')
 
@@ -171,31 +177,48 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
+        delivery_ref_col = next(
+            (m['source'] for m in mappings.get('delivery', []) if m['tag'].lower() == 'address_id'), None
+        )
+        shipment_ref = clean_text(row.get(delivery_ref_col, ''))
+        if shipment_ref:
+            ET.SubElement(shipment_el, 'reference').text = shipment_ref
+
         pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
         for m in mappings.get('pickup', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
-                ET.SubElement(pickup_el, m['tag']).text = val
+                attrib = {}
+                if m['tag'].lower() in match_modes:
+                    attrib['matchmode'] = match_modes[m['tag'].lower()]
+                ET.SubElement(pickup_el, m['tag'], attrib).text = val
 
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
         for m in mappings.get('delivery', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
-                ET.SubElement(delivery_el, m['tag']).text = val
+                attrib = {}
+                if m['tag'].lower() in match_modes:
+                    attrib['matchmode'] = match_modes[m['tag'].lower()]
+                ET.SubElement(delivery_el, m['tag'], attrib).text = val
 
         cargo_el = ET.SubElement(shipment_el, 'cargo')
         for m in mappings.get('cargo', []):
             val = clean_text(row.get(m['source'], ''))
             if not val:
                 continue
+            attrib = {}
+            if m['tag'].lower() in match_modes:
+                attrib['matchmode'] = match_modes[m['tag'].lower()]
             if m['tag'].lower() == 'unitamount':
-                ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
-            ET.SubElement(cargo_el, m['tag']).text = val
+                ET.SubElement(cargo_el, 'unitid', attrib).text = 'EuroPallet'
+            ET.SubElement(cargo_el, m['tag'], attrib).text = val
 
     indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
+
 
 def list_xlsx_files(ftp, directory):
     try:
