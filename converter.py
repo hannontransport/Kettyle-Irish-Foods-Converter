@@ -34,7 +34,7 @@ MATCHMODE_RULES = {
     "address_id": "1",
     "city_id": "4",
     "product_id": "1",
-    "unitid": "1"
+    "unit_id": "1"
 }
 
 def setup_logger():
@@ -118,7 +118,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     df = df.replace(r"^\s*$", "", regex=True).fillna("")
     df = df[~(df.applymap(lambda x: str(x).strip() == "").all(axis=1))]
 
-    def normalize(h): 
+    def normalize(h):
         return re.sub(r"[^A-Z0-9]", "", str(h).upper())
 
     df.columns = [normalize(c) for c in df.columns]
@@ -127,6 +127,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     root = ET.Element("transportbookings")
     booking_el = ET.SubElement(root, "transportbooking")
+
+    header_reference = ""
 
     for m in mappings.get("header", []):
         tag = m["tag"]
@@ -141,9 +143,14 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         else:
             val = clean_text(src)
         if val:
+            if tag.lower() == "reference":
+                header_reference = val 
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
             ET.SubElement(booking_el, tag, attrib).text = val
+
+    if header_reference:
+        ET.SubElement(booking_el, "edireference").text = header_reference
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
@@ -163,11 +170,13 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     for _, row in df_valid.iterrows():
         shipment_el = ET.SubElement(shipments_el, "shipment")
+        shipment_ref = ""
 
         if shipment_ref_col:
-            ref_val = clean_text(row.get(shipment_ref_col, ""))
-            if ref_val:
-                ET.SubElement(shipment_el, "reference").text = ref_val
+            shipment_ref = clean_text(row.get(shipment_ref_col, ""))
+            if shipment_ref:
+                ET.SubElement(shipment_el, "reference").text = shipment_ref
+                ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
         pickup_el = ET.SubElement(shipment_el, "pickupaddress")
         for m in mappings.get("pickup", []):
@@ -184,6 +193,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
+
         cargo_el = ET.SubElement(shipment_el, "cargo")
         unitid_added = False
 
@@ -196,14 +206,12 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
 
-            # Handle unitid manually (we only add one EuroPallet)
             if tag == "unitid":
                 if not unitid_added:
                     unitid_added = True
                     ET.SubElement(cargo_el, "unitid", attrib).text = "EuroPallet"
-                continue  # skip CSV-provided unitid values
+                continue
 
-            # When unitamount found, ensure unitid exists before it
             if tag == "unitamount" and not unitid_added:
                 uid_mm = get_matchmode("unitid")
                 uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
@@ -211,7 +219,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 unitid_added = True
 
             ET.SubElement(cargo_el, m["tag"], attrib).text = val
-
 
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
