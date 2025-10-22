@@ -1,10 +1,10 @@
 ﻿section,tag,source
 header,reference,CELL D2
 pickup,address_id,COLLECTIONREFERENCE
-pickup,name,COLLECTIONNAMEANDADDRESS
+pickup,name,COLLECTIONNAMEADDRESS
 pickup,date,LOADING
 delivery,address_id,DELIVERYREFERENCE
-delivery,address1,DELIVERYNAMEANDADDRESS
+delivery,address1,DELIVERYNAMEADDRESS
 delivery,city_id,DELIVERYCITY
 delivery,deliverytime,DELIVERYTIME
 delivery,date,UNLOADING
