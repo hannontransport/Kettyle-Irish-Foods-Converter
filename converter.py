@@ -102,14 +102,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     from difflib import get_close_matches
 
     mappings = load_mapping(mapping_csv)
-
     df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=3)
-
     df = df.replace(r'^\s*$', '', regex=True)
     df = df.fillna('')
     df = df[~(df.applymap(lambda x: str(x).strip() == '').all(axis=1))]
-
-    logger.info(f"🧹 Cleaned DataFrame — remaining rows after removing empty VLOOKUP rows: {len(df)}")
+    logger.info(f"Cleaned DataFrame — remaining rows after removing empty VLOOKUP rows: {len(df)}")
 
     def normalize_header(h):
         h = str(h).upper()
@@ -118,7 +115,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     raw_headers = list(df.columns)
     df.columns = [normalize_header(c) for c in df.columns]
-
     logger.info(f"RAW Excel headers (row 4): {raw_headers}")
     logger.info(f"NORMALIZED Excel headers: {list(df.columns)}")
 
@@ -149,10 +145,14 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     else:
         logger.warning("No booking reference found in D2 or C2.")
 
-    shipments_el = ET.SubElement(booking_el, 'shipments')
-    logger.info(f"Total shipment rows detected: {len(df)}")
+    key_columns = ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION']
+    key_columns = [c for c in key_columns if c in df.columns]
+    df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
+    logger.info(f"Valid shipment rows: {len(df_valid)} (out of {len(df)})")
 
-    for i, row in df.iterrows():
+    shipments_el = ET.SubElement(booking_el, 'shipments')
+
+    for _, row in df_valid.iterrows():
         if not any(clean_text(v) for v in row.values):
             continue
 
@@ -179,16 +179,10 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
 
-        if i < 3:
-            logger.info(f"🧾 Shipment row {i + 5} preview:")
-            for col, val in row.items():
-                if val:
-                    logger.info(f"  {col}: {val}")
-
     indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
-    logger.info(f"✅ XML written successfully: {output_xml}")
+    logger.info(f"XML written successfully: {output_xml}")
 
 def list_xlsx_files(ftp, directory):
     try:
@@ -198,7 +192,6 @@ def list_xlsx_files(ftp, directory):
         logger.error(f"Error listing files: {e}")
         send_email("Kettyle Irish Foods EDI - File Listing Failed", f"Error listing files in {directory}.")
         return []
-
 
 def move_file(ftp, from_path, to_directory):
     try:
@@ -210,7 +203,6 @@ def move_file(ftp, from_path, to_directory):
         logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
         send_email("Kettyle Irish Foods EDI - File Move Failed", f"Failed to move {file_name} to {to_directory}")
 
-
 def download_file(ftp, remote_path, local_path):
     try:
         os.makedirs(os.path.dirname(local_path), exist_ok=True)
@@ -220,7 +212,6 @@ def download_file(ftp, remote_path, local_path):
         logger.error(f"Error downloading {remote_path}: {e}")
         send_email("Kettyle Irish Foods EDI - File Download Failed", f"Failed to download {remote_path}")
         raise
-
 
 def upload_file(ftp, local_path, remote_path):
     try:
@@ -263,7 +254,7 @@ def main():
             previous_files = current_files
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            send_email("Kettyle Irish Foods EDI - Unexpected Error", f"Unexpected error occurred. Check logs.")
+            send_email("Kettyle Irish Foods EDI - Unexpected Error", "Unexpected error occurred. Check logs.")
         finally:
             try:
                 ftp.quit()
