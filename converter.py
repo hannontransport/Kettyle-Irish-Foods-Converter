@@ -106,19 +106,27 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     df = df.replace(r'^\s*$', '', regex=True)
     df = df.fillna('')
     df = df[~(df.applymap(lambda x: str(x).strip() == '').all(axis=1))]
+    logger.info(f"Cleaned DataFrame — remaining rows after removing empty VLOOKUP rows: {len(df)}")
 
     def normalize_header(h):
         h = str(h).upper()
         h = re.sub(r'[^A-Z0-9]', '', h)
         return h
 
+    raw_headers = list(df.columns)
     df.columns = [normalize_header(c) for c in df.columns]
+    logger.info(f"RAW Excel headers (row 4): {raw_headers}")
+    logger.info(f"NORMALIZED Excel headers: {list(df.columns)}")
+
     for section, entries in mappings.items():
         for m in entries:
             src_clean = normalize_header(m['source'])
             match = get_close_matches(src_clean, df.columns, n=1, cutoff=0.7)
             if match:
                 m['source'] = match[0]
+                logger.info(f"Matched mapping: {section.upper()} → {m['tag']} = {m['source']}")
+            else:
+                logger.warning(f"No header match for '{m['source']}' in section '{section}'")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
@@ -128,39 +136,41 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         wb = openpyxl.load_workbook(filepath, data_only=True)
         ws = wb.active
         ref_value = clean_text(ws['D2'].value or ws['C2'].value)
-    except:
-        pass
+    except Exception as e:
+        logger.warning(f"Could not read booking reference (D2/C2): {e}")
 
     if ref_value:
         ET.SubElement(booking_el, 'reference').text = ref_value
+        logger.info(f"Booking reference: {ref_value}")
+    else:
+        logger.warning("No booking reference found in D2 or C2.")
 
     key_columns = ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION']
     key_columns = [c for c in key_columns if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
+    logger.info(f"Valid shipment rows: {len(df_valid)} (out of {len(df)})")
 
     shipments_el = ET.SubElement(booking_el, 'shipments')
 
     for _, row in df_valid.iterrows():
+        if not any(clean_text(v) for v in row.values):
+            continue
+
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
         pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
-        pickup_filled = []
         for m in mappings.get('pickup', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 ET.SubElement(pickup_el, m['tag']).text = val
-                pickup_filled.append(m['tag'].lower())
 
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
-        delivery_filled = []
         for m in mappings.get('delivery', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
                 ET.SubElement(delivery_el, m['tag']).text = val
-                delivery_filled.append(m['tag'].lower())
 
         cargo_el = ET.SubElement(shipment_el, 'cargo')
-        cargo_filled = []
         for m in mappings.get('cargo', []):
             val = clean_text(row.get(m['source'], ''))
             if not val:
@@ -168,20 +178,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             if m['tag'].lower() == 'unitamount':
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
-            cargo_filled.append(m['tag'].lower())
-
-        if pickup_filled == ['date']:
-            shipment_el.remove(pickup_el)
-
-        has_pickup = any(pickup_el.findall("*")) and pickup_el in shipment_el
-        has_delivery = any(delivery_el.findall("*"))
-        has_cargo = any(cargo_el.findall("*"))
-
-        if not (has_pickup or has_delivery or has_cargo):
-            shipments_el.remove(shipment_el)
 
     indent(root)
-    ET.ElementTree(root).write(output_xml, encoding='utf-8', xml_declaration=True)
+    tree = ET.ElementTree(root)
+    tree.write(output_xml, encoding='utf-8', xml_declaration=True)
+    logger.info(f"XML written successfully: {output_xml}")
 
 def list_xlsx_files(ftp, directory):
     try:
