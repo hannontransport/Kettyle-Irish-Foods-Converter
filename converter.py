@@ -101,23 +101,39 @@ def indent(elem, level=0):
 
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl
+    from difflib import get_close_matches
+    import re
 
     mappings = load_mapping(mapping_csv)
+
+    # Read Excel rows starting from row 5 (headers on row 5)
     df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=4)
     df.fillna('', inplace=True)
 
-    df.columns = df.columns.str.strip().str.upper().str.replace(r'\s+', ' ', regex=True)
-    logger.info(f"Detected Excel columns: {list(df.columns)}")
+    # 🔧 Normalize headers: remove all spaces, *, &, punctuation
+    def normalize_header(h):
+        h = str(h).upper()
+        h = re.sub(r'[^A-Z0-9]', '', h)  # keep only alphanumerics
+        return h
 
-    # Log any missing mappings
+    df.columns = [normalize_header(c) for c in df.columns]
+    logger.info(f"🧾 Normalized Excel headers: {list(df.columns)}")
+
+    # Normalize mapping sources the same way
     for section, entries in mappings.items():
         for m in entries:
-            if m['source'] not in df.columns:
-                logger.warning(f"Mapping source '{m['source']}' not found in Excel headers")
+            src = normalize_header(m['source'])
+            # Try fuzzy match with normalized headers
+            best_match = get_close_matches(src, df.columns, n=1, cutoff=0.7)
+            if best_match:
+                m['source'] = best_match[0]
+            else:
+                logger.warning(f"⚠️ No header match found for mapping source '{m['source']}'")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
 
+    # Read booking reference from D2
     ref_value = ''
     try:
         wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -134,27 +150,28 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     shipments_el = ET.SubElement(booking_el, 'shipments')
 
+    # Loop through each row → create a shipment
     for _, row in df.iterrows():
         if not any(clean_text(v) for v in row.values):
             continue
 
         shipment_el = ET.SubElement(shipments_el, 'shipment')
 
-        # Pickup
+        # Pickup section
         pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
         for m in mappings.get('pickup', []):
             val = clean_text(row.get(m['source']))
             if val:
                 ET.SubElement(pickup_el, m['tag']).text = val
 
-        # Delivery
+        # Delivery section
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
         for m in mappings.get('delivery', []):
             val = clean_text(row.get(m['source']))
             if val:
                 ET.SubElement(delivery_el, m['tag']).text = val
 
-        # Cargo
+        # Cargo section
         cargo_el = ET.SubElement(shipment_el, 'cargo')
         for m in mappings.get('cargo', []):
             val = clean_text(row.get(m['source']))
@@ -164,11 +181,12 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(cargo_el, 'unitid').text = 'EuroPallet'
             ET.SubElement(cargo_el, m['tag']).text = val
 
-    # Pretty XML formatting
+    # Pretty-print XML
     indent(root)
     tree = ET.ElementTree(root)
     tree.write(output_xml, encoding='utf-8', xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
+
 
 
 def list_xlsx_files(ftp, directory):
