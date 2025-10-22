@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import logging
 from datetime import datetime
@@ -30,6 +29,14 @@ FROM_EMAIL = Config.FROM_EMAIL
 TO_EMAIL = Config.TO_EMAIL
 COLUMNS_FILE = Config.COLUMNS_FILE
 
+MATCHMODE_RULES = {
+    "customer_id": "1",
+    "address_id": "1",
+    "city_id": "4",
+    "product_id": "1",
+    "unitid": "1"
+}
+
 def setup_logger():
     if not os.path.exists("logs"):
         os.makedirs("logs")
@@ -43,12 +50,12 @@ def setup_logger():
 logger = setup_logger()
 
 def send_email(subject, body):
-    msg = MIMEMultipart()
-    msg["From"] = FROM_EMAIL
-    msg["To"] = TO_EMAIL
-    msg["Subject"] = subject
-    msg.attach(MIMEText(body, "plain"))
     try:
+        msg = MIMEMultipart()
+        msg["From"] = FROM_EMAIL
+        msg["To"] = TO_EMAIL
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -76,12 +83,18 @@ def load_mapping(csv_path):
         section = str(row.get("section", "")).strip().lower()
         tag = str(row.get("tag", "")).strip()
         source = str(row.get("source", "")).strip().upper()
-        matchmode = str(row.get("matchmode", "")).strip()
         if section and tag and source:
             if section not in mappings:
                 mappings[section] = []
-            mappings[section].append({"tag": tag, "source": source, "matchmode": matchmode})
+            mappings[section].append({
+                "tag": tag,
+                "source": source
+            })
     return mappings
+
+def get_matchmode(tag):
+    tag_lower = tag.lower()
+    return MATCHMODE_RULES.get(tag_lower, "")
 
 def indent(elem, level=0):
     i = "\n" + level * "  "
@@ -99,11 +112,15 @@ def indent(elem, level=0):
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
     from difflib import get_close_matches
+
     mappings = load_mapping(mapping_csv)
     df = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
     df = df.replace(r"^\s*$", "", regex=True).fillna("")
     df = df[~(df.applymap(lambda x: str(x).strip() == "").all(axis=1))]
-    def normalize(h): return re.sub(r"[^A-Z0-9]", "", str(h).upper())
+
+    def normalize(h): 
+        return re.sub(r"[^A-Z0-9]", "", str(h).upper())
+
     df.columns = [normalize(c) for c in df.columns]
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
@@ -114,7 +131,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     for m in mappings.get("header", []):
         tag = m["tag"]
         src = m["source"].upper()
-        mm = m.get("matchmode", "")
         val = ""
         if src.startswith("CELL"):
             cell_ref = src.split()[-1]
@@ -125,6 +141,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         else:
             val = clean_text(src)
         if val:
+            mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
             ET.SubElement(booking_el, tag, attrib).text = val
 
@@ -146,6 +163,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     for _, row in df_valid.iterrows():
         shipment_el = ET.SubElement(shipments_el, "shipment")
+
         if shipment_ref_col:
             ref_val = clean_text(row.get(shipment_ref_col, ""))
             if ref_val:
@@ -155,7 +173,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         for m in mappings.get("pickup", []):
             val = clean_text(row.get(m["source"], ""))
             if val:
-                mm = m.get("matchmode", "")
+                mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(pickup_el, m["tag"], attrib).text = val
 
@@ -163,7 +181,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         for m in mappings.get("delivery", []):
             val = clean_text(row.get(m["source"], ""))
             if val:
-                mm = m.get("matchmode", "")
+                mm = get_matchmode(m["tag"])
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
@@ -173,15 +191,13 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             val = clean_text(row.get(m["source"], ""))
             if not val:
                 continue
-            mm = m.get("matchmode", "")
+            mm = get_matchmode(m["tag"])
             attrib = {"matchmode": mm} if mm else {}
             if m["tag"].lower() == "unitamount" and not unitid_added:
                 unitid_added = True
-                uid_map = next((c for c in mappings.get("cargo", []) if c["tag"].lower() == "unitid"), None)
-                if uid_map:
-                    uid_mm = uid_map.get("matchmode", "")
-                    uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
-                    ET.SubElement(cargo_el, "unitid", uid_attrib).text = "EuroPallet"
+                uid_mm = get_matchmode("unitid")
+                uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
+                ET.SubElement(cargo_el, "unitid", uid_attrib).text = "EuroPallet"
             ET.SubElement(cargo_el, m["tag"], attrib).text = val
 
     indent(root)
