@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-from datetime import datetime, date
+from datetime import datetime
 import ftplib
 import pandas as pd
 import xml.etree.ElementTree as ET
@@ -65,8 +65,6 @@ def send_email(subject, body):
 def clean_text(value):
     if pd.isna(value):
         return ''
-    if isinstance(value, (datetime, date)):
-        return value.strftime("%Y-%m-%d")
     val = str(value).strip()
     if val in ['#N/A', 'nan', 'NaT', 'None', '']:
         return ''
@@ -76,7 +74,7 @@ def clean_text(value):
 
 def clean_matchmode(value):
     val = str(value).strip()
-    if val.lower() in ['nan', 'none', '', '0']:
+    if val in ['nan', 'None', '', '0']:
         return ''
     if '.' in val:
         val = val.split('.')[0]
@@ -207,19 +205,21 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
         cargo_el = ET.SubElement(shipment_el, 'cargo')
         added_unitid = False
+        unitamount_mm = None
+        for m in mappings.get('cargo', []):
+            if m['tag'].lower() == 'unitamount':
+                unitamount_mm = clean_matchmode(m.get('matchmode', ''))
+                break
         for m in mappings.get('cargo', []):
             tag = m['tag'].lower()
             val = clean_text(row.get(m['source'], ''))
             if not val:
                 continue
             mm = clean_matchmode(m['matchmode'])
-            if tag == 'unitamount':
-                if not added_unitid:
-                    attrib_uid = {'matchmode': mm or '1'}
-                    ET.SubElement(cargo_el, 'unitid', attrib_uid).text = 'EuroPallet'
-                    added_unitid = True
-            elif tag == 'unitid':
-                continue
+            if tag == 'unitamount' and not added_unitid:
+                attrib_uid = {'matchmode': (unitamount_mm or '1')}
+                ET.SubElement(cargo_el, 'unitid', attrib_uid).text = 'EuroPallet'
+                added_unitid = True
             attrib = {'matchmode': mm} if mm else {}
             ET.SubElement(cargo_el, m['tag'], attrib).text = val
 
