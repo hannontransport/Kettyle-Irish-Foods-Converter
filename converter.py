@@ -194,7 +194,11 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
         cargo_el = ET.SubElement(shipment_el, "cargo")
-        unit_id_added = False
+
+        try:
+            unit_id_val = clean_text(row.iloc[11])
+        except Exception:
+            unit_id_val = ""
 
         for m in mappings.get("cargo", []):
             tag = m["tag"].lower().strip()
@@ -206,18 +210,10 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             attrib = {"matchmode": mm} if mm else {}
 
             if tag == "unit_id":
-                if not unit_id_added:
-                    unit_id_added = True
-                    ET.SubElement(cargo_el, "unit_id", attrib).text = "EuroPallet"
-                continue  
+                if unit_id_val:
+                    ET.SubElement(cargo_el, "unit_id", attrib).text = unit_id_val
+                continue
 
-            if tag == "unitamount" and not unit_id_added:
-                unit_id_added = True
-                uid_mm = get_matchmode("unit_id")
-                uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
-                ET.SubElement(cargo_el, "unit_id", uid_attrib).text = "EuroPallet"
-
-            ET.SubElement(cargo_el, m["tag"], attrib).text = val
             ET.SubElement(cargo_el, m["tag"], attrib).text = val
 
     indent(root)

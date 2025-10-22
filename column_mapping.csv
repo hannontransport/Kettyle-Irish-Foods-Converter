@@ -10,6 +10,5 @@ delivery,city_id,DELIVERYCITY
 delivery,deliverytime,DELIVERYTIME
 delivery,date,UNLOADING
 cargo,product_id,GOODSDESCRIPTION
-cargo,unit_id,EUROPALLET
 cargo,unitamount,EUROPALLET
 shipment,reference,COLUMN P
