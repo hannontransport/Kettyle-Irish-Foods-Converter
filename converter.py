@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import logging
 from datetime import datetime
@@ -30,30 +31,24 @@ TO_EMAIL = Config.TO_EMAIL
 COLUMNS_FILE = Config.COLUMNS_FILE
 
 def setup_logger():
-    if not os.path.exists('logs'):
-        os.makedirs('logs')
+    if not os.path.exists("logs"):
+        os.makedirs("logs")
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.INFO)
-    handler = TimedRotatingFileHandler(
-        'logs/KettyleIrishFoodsConverter.log',
-        when='midnight',
-        interval=1,
-        backupCount=30,
-        encoding='utf-8'
-    )
-    handler.setFormatter(logging.Formatter('%(asctime)s %(message)s'))
+    handler = TimedRotatingFileHandler("logs/KettyleIrishFoodsConverter.log", when="midnight", interval=1, backupCount=30, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
     logger.addHandler(handler)
     return logger
 
 logger = setup_logger()
 
 def send_email(subject, body):
+    msg = MIMEMultipart()
+    msg["From"] = FROM_EMAIL
+    msg["To"] = TO_EMAIL
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
     try:
-        msg = MIMEMultipart()
-        msg['From'] = FROM_EMAIL
-        msg['To'] = TO_EMAIL
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -64,36 +59,28 @@ def send_email(subject, body):
 
 def clean_text(value):
     import datetime
-
-    if pd.isna(value) or value in ['#N/A', 'nan', 'NaT', 'None', '']:
-        return ''
-
+    if pd.isna(value) or str(value).strip() in ["", "nan", "NaT", "None", "#N/A"]:
+        return ""
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.strftime("%Y-%m-%d")
-
-    if isinstance(value, float):
-        if value.is_integer():
-            return str(int(value))
-        else:
-            return str(value)
-        
     val = str(value).strip()
-    if val.endswith('.0') and val.replace('.', '').isdigit():
+    if val.endswith(".0") and val.replace(".", "", 1).isdigit():
         val = val[:-2]
-
     return val
 
 def load_mapping(csv_path):
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, dtype=str).fillna("")
     df.columns = df.columns.str.strip().str.lower()
     mappings = {}
     for _, row in df.iterrows():
-        section = clean_text(row['section']).lower()
-        tag = clean_text(row['tag'])
-        source = clean_text(row['source']).upper()
-        if section not in mappings:
-            mappings[section] = []
-        mappings[section].append({'tag': tag, 'source': source})
+        section = str(row.get("section", "")).strip().lower()
+        tag = str(row.get("tag", "")).strip()
+        source = str(row.get("source", "")).strip().upper()
+        matchmode = str(row.get("matchmode", "")).strip()
+        if section and tag and source:
+            if section not in mappings:
+                mappings[section] = []
+            mappings[section].append({"tag": tag, "source": source, "matchmode": matchmode})
     return mappings
 
 def indent(elem, level=0):
@@ -110,161 +97,139 @@ def indent(elem, level=0):
             elem.tail = i
 
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
-    import openpyxl
-    import re
+    import openpyxl, re
     from difflib import get_close_matches
-
     mappings = load_mapping(mapping_csv)
-
-    df = pd.read_excel(filepath, sheet_name=0, engine='openpyxl', header=3)
-    df = df.replace(r'^\s*$', '', regex=True).fillna('')
-    df = df[~(df.applymap(lambda x: str(x).strip() == '').all(axis=1))]
-
-    def normalize(h):
-        return re.sub(r'[^A-Z0-9]', '', str(h).upper())
-
+    df = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
+    df = df.replace(r"^\s*$", "", regex=True).fillna("")
+    df = df[~(df.applymap(lambda x: str(x).strip() == "").all(axis=1))]
+    def normalize(h): return re.sub(r"[^A-Z0-9]", "", str(h).upper())
     df.columns = [normalize(c) for c in df.columns]
-    logger.info(f"NORMALIZED Excel headers: {list(df.columns)}")
-
-    for section, entries in mappings.items():
-        for m in entries:
-            src = normalize(m['source'])
-            if src.startswith(("CELL", "COLUMN")):
-                continue
-            match = get_close_matches(src, df.columns, n=1, cutoff=0.7)
-            if match:
-                m['source'] = match[0]
-
     wb = openpyxl.load_workbook(filepath, data_only=True)
     ws = wb.active
 
-    root = ET.Element('transportbookings')
-    booking_el = ET.SubElement(root, 'transportbooking')
+    root = ET.Element("transportbookings")
+    booking_el = ET.SubElement(root, "transportbooking")
 
-    # HEADER
-    for m in mappings.get('header', []):
-        tag = m['tag']
-        src = m['source'].upper()
-        matchmode = clean_text(m.get('matchmode', ''))
-        val = ''
-        if src.startswith('CELL'):
+    for m in mappings.get("header", []):
+        tag = m["tag"]
+        src = m["source"].upper()
+        mm = m.get("matchmode", "")
+        val = ""
+        if src.startswith("CELL"):
             cell_ref = src.split()[-1]
             try:
                 val = clean_text(ws[cell_ref].value)
             except:
-                val = ''
+                val = ""
         else:
             val = clean_text(src)
         if val:
-            attrib = {'matchmode': matchmode} if matchmode else {}
+            attrib = {"matchmode": mm} if mm else {}
             ET.SubElement(booking_el, tag, attrib).text = val
 
-    shipments_el = ET.SubElement(booking_el, 'shipments')
+    shipments_el = ET.SubElement(booking_el, "shipments")
 
-    # Get shipment reference column
     shipment_ref_col = None
-    ref_map = next((m for m in mappings.get('shipment', []) if m['tag'].lower() == 'reference'), None)
+    ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
     if ref_map:
-        src = ref_map['source'].upper()
+        src = ref_map["source"].upper()
         if src.startswith("COLUMN"):
             col_letter = src.split()[-1].strip()
-            col_idx = ord(col_letter) - ord('A')
+            col_idx = ord(col_letter) - ord("A")
             shipment_ref_col = df.columns[col_idx] if len(df.columns) > col_idx else None
         else:
             shipment_ref_col = normalize(src)
 
-    key_columns = ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION']
-    key_columns = [c for c in key_columns if c in df.columns]
+    key_columns = [c for c in ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"] if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
 
     for _, row in df_valid.iterrows():
-        shipment_el = ET.SubElement(shipments_el, 'shipment')
-
-        # Shipment reference
+        shipment_el = ET.SubElement(shipments_el, "shipment")
         if shipment_ref_col:
-            ref_val = clean_text(row.get(shipment_ref_col, ''))
+            ref_val = clean_text(row.get(shipment_ref_col, ""))
             if ref_val:
-                ET.SubElement(shipment_el, 'reference').text = ref_val
+                ET.SubElement(shipment_el, "reference").text = ref_val
 
-        # Pickup
-        pickup_el = ET.SubElement(shipment_el, 'pickupaddress')
-        for m in mappings.get('pickup', []):
-            val = clean_text(row.get(m['source'], ''))
+        pickup_el = ET.SubElement(shipment_el, "pickupaddress")
+        for m in mappings.get("pickup", []):
+            val = clean_text(row.get(m["source"], ""))
             if val:
-                mm = clean_text(m.get('matchmode', ''))
-                attrib = {'matchmode': mm} if mm else {}
-                ET.SubElement(pickup_el, m['tag'], attrib).text = val
+                mm = m.get("matchmode", "")
+                attrib = {"matchmode": mm} if mm else {}
+                ET.SubElement(pickup_el, m["tag"], attrib).text = val
 
-        # Delivery
-        delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
-        for m in mappings.get('delivery', []):
-            val = clean_text(row.get(m['source'], ''))
+        delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
+        for m in mappings.get("delivery", []):
+            val = clean_text(row.get(m["source"], ""))
             if val:
-                mm = clean_text(m.get('matchmode', ''))
-                attrib = {'matchmode': mm} if mm else {}
-                ET.SubElement(delivery_el, m['tag'], attrib).text = val
+                mm = m.get("matchmode", "")
+                attrib = {"matchmode": mm} if mm else {}
+                ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
-        # Cargo
-        cargo_el = ET.SubElement(shipment_el, 'cargo')
+        cargo_el = ET.SubElement(shipment_el, "cargo")
         unitid_added = False
-        for m in mappings.get('cargo', []):
-            val = clean_text(row.get(m['source'], ''))
+        for m in mappings.get("cargo", []):
+            val = clean_text(row.get(m["source"], ""))
             if not val:
                 continue
-            mm = clean_text(m.get('matchmode', ''))
-            attrib = {'matchmode': mm} if mm else {}
-
-            if m['tag'].lower() == 'unitamount' and not unitid_added:
+            mm = m.get("matchmode", "")
+            attrib = {"matchmode": mm} if mm else {}
+            if m["tag"].lower() == "unitamount" and not unitid_added:
                 unitid_added = True
-                unitid_map = next((c for c in mappings.get('cargo', []) if c['tag'].lower() == 'unitid'), None)
-                if unitid_map:
-                    uid_mm = clean_text(unitid_map.get('matchmode', ''))
-                    uid_attrib = {'matchmode': uid_mm} if uid_mm else {}
-                    ET.SubElement(cargo_el, 'unitid', uid_attrib).text = 'EuroPallet'
-
-            ET.SubElement(cargo_el, m['tag'], attrib).text = val
+                uid_map = next((c for c in mappings.get("cargo", []) if c["tag"].lower() == "unitid"), None)
+                if uid_map:
+                    uid_mm = uid_map.get("matchmode", "")
+                    uid_attrib = {"matchmode": uid_mm} if uid_mm else {}
+                    ET.SubElement(cargo_el, "unitid", uid_attrib).text = "EuroPallet"
+            ET.SubElement(cargo_el, m["tag"], attrib).text = val
 
     indent(root)
-    ET.ElementTree(root).write(output_xml, encoding='utf-8', xml_declaration=True)
+    ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
 
-
 def list_xlsx_files(ftp, directory):
+    files = []
+    def parse_line(line):
+        parts = line.split(";")
+        if len(parts) > 1:
+            filename = parts[-1].strip()
+            if filename.lower().endswith(".xlsx"):
+                files.append(filename)
     try:
         ftp.cwd(directory)
-        return [f for f in ftp.nlst() if f.lower().endswith('.xlsx')]
+        ftp.retrlines("MLSD", parse_line)
     except Exception as e:
-        logger.error(f"Error listing files: {e}")
-        send_email("Kettyle Irish Foods EDI - File Listing Failed", f"Error listing files in {directory}.")
-        return []
+        logger.error(f"Error listing files: {str(e)}")
+        send_email("Kettyle EDI - File Listing Failed", "Error listing files on FTP.")
+    return files
 
 def move_file(ftp, from_path, to_directory):
     try:
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        file_name = os.path.basename(from_path)
-        new_file_name = f"{timestamp}_{file_name}"
-        ftp.rename(from_path, f"{to_directory}/{new_file_name}")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = os.path.basename(from_path)
+        new_name = f"{timestamp}_{filename}"
+        ftp.rename(from_path, f"{to_directory}/{new_name}")
     except Exception as e:
-        logger.error(f"Error moving file {from_path} to {to_directory}: {e}")
-        send_email("Kettyle Irish Foods EDI - File Move Failed", f"Failed to move {file_name} to {to_directory}")
+        logger.error(f"Error moving file {from_path}: {str(e)}")
+        send_email("Kettyle EDI - File Move Failed", f"Could not move file {filename}.")
 
 def download_file(ftp, remote_path, local_path):
     try:
-        os.makedirs(os.path.dirname(local_path), exist_ok=True)
-        with open(local_path, 'wb') as f:
-            ftp.retrbinary(f'RETR {remote_path}', f.write)
+        with open(local_path, "wb") as f:
+            ftp.retrbinary(f"RETR {remote_path}", f.write)
     except Exception as e:
-        logger.error(f"Error downloading {remote_path}: {e}")
-        send_email("Kettyle Irish Foods EDI - File Download Failed", f"Failed to download {remote_path}")
+        logger.error(f"Error downloading {remote_path}: {str(e)}")
+        send_email("Kettyle EDI - File Download Failed", f"Could not download {remote_path}.")
         raise
 
 def upload_file(ftp, local_path, remote_path):
     try:
-        with open(local_path, 'rb') as f:
-            ftp.storbinary(f'STOR {remote_path}', f)
+        with open(local_path, "rb") as f:
+            ftp.storbinary(f"STOR {remote_path}", f)
     except Exception as e:
-        logger.error(f"Error uploading {local_path}: {e}")
-        send_email("Kettyle Irish Foods EDI - File Upload Failed", f"Failed to upload {local_path}")
+        logger.error(f"Error uploading {local_path}: {str(e)}")
+        send_email("Kettyle EDI - File Upload Failed", f"Could not upload {local_path}.")
 
 def main():
     previous_files = []
@@ -274,32 +239,29 @@ def main():
             ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
             ftp.set_pasv(True)
-
             current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             new_files = [f for f in current_files if f not in previous_files]
-
             if new_files:
                 logger.info(f"New files detected: {new_files}")
                 for file in new_files:
-                    remote_path = f"{WATCH_FOLDER}/{file}"
-                    local_path = os.path.join(DOWNLOAD_FOLDER, file)
                     try:
+                        remote_path = f"{WATCH_FOLDER}/{file}"
+                        local_path = f"{DOWNLOAD_FOLDER}/{file}"
                         download_file(ftp, remote_path, local_path)
-                        xml_output_path = os.path.splitext(local_path)[0] + ".xml"
-                        write_xml(local_path, xml_output_path)
-                        upload_file(ftp, xml_output_path, f"{UPLOAD_FOLDER}/{os.path.basename(xml_output_path)}")
+                        xml_output = os.path.splitext(local_path)[0] + ".xml"
+                        write_xml(local_path, xml_output)
+                        upload_file(ftp, xml_output, f"{UPLOAD_FOLDER}/{os.path.basename(xml_output)}")
                         move_file(ftp, remote_path, PROCESSED_FOLDER)
                     except Exception as e:
-                        logger.error(f"Processing error for {file}: {e}")
                         move_file(ftp, remote_path, ERROR_FOLDER)
+                        logger.error(f"Processing stopped due to error: {str(e)}")
                         break
             else:
                 logger.info("No new files detected.")
-
             previous_files = current_files
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
-            send_email("Kettyle Irish Foods EDI - Unexpected Error", "Unexpected error occurred. Check logs.")
+            logger.error(f"Unexpected error: {str(e)}")
+            send_email("Kettyle EDI - Unexpected Error", "Unexpected error. Check logs for details.")
         finally:
             try:
                 ftp.quit()
