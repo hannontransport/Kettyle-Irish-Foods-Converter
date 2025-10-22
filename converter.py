@@ -111,7 +111,6 @@ def indent(elem, level=0):
 
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
-    from difflib import get_close_matches
 
     mappings = load_mapping(mapping_csv)
     df = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
@@ -206,14 +205,12 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
 
-            # Add only one <unit_id> tag (EuroPallet)
             if tag == "unit_id":
                 if not unit_id_added:
                     unit_id_added = True
                     ET.SubElement(cargo_el, "unit_id", attrib).text = "EuroPallet"
-                continue  # skip any further unit_id
+                continue  
 
-            # If unitamount appears before, ensure <unit_id> exists first
             if tag == "unitamount" and not unit_id_added:
                 unit_id_added = True
                 uid_mm = get_matchmode("unit_id")
