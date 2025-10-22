@@ -1,15 +1,15 @@
-﻿section,tag,source,matchmode
-header,reference,CELL D2,
-header,customer_id,KETTYLEFOODS,1
-pickup,address_id,COLLECTIONREFERENCE,1
-pickup,name,COLLECTIONNAMEADDRESS,
-pickup,date,LOADING,
-delivery,address_id,DELIVERYREFERENCE,1
-delivery,address1,DELIVERYNAMEADDRESS,
-delivery,city_id,DELIVERYCITY,4
-delivery,deliverytime,DELIVERYTIME,
-delivery,date,UNLOADING,
-cargo,product_id,GOODSDESCRIPTION,1
-cargo,unitid,EUROPALLET,1
-cargo,unitamount,EUROPALLET,
-shipment,reference,COLUMN P,
+﻿section,tag,source
+header,reference,CELL D2
+header,customer_id,KETTYLEFOODS
+pickup,address_id,COLLECTIONREFERENCE
+pickup,name,COLLECTIONNAMEADDRESS
+pickup,date,LOADING
+delivery,address_id,DELIVERYREFERENCE
+delivery,address1,DELIVERYNAMEADDRESS
+delivery,city_id,DELIVERYCITY
+delivery,deliverytime,DELIVERYTIME
+delivery,date,UNLOADING
+cargo,product_id,GOODSDESCRIPTION
+cargo,unitid,EUROPALLET
+cargo,unitamount,EUROPALLET
+shipment,reference,COLUMN P
