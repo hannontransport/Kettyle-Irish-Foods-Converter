@@ -63,11 +63,24 @@ def send_email(subject, body):
         logger.error(f"Email send failed: {e}")
 
 def clean_text(value):
-    if pd.isna(value):
+    import datetime
+
+    if pd.isna(value) or value in ['#N/A', 'nan', 'NaT', 'None', '']:
         return ''
+
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.strftime("%Y-%m-%d")
+
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        else:
+            return str(value)
+        
     val = str(value).strip()
-    if val in ['#N/A', 'nan', 'NaT', 'None', '']:
-        return ''
+    if val.endswith('.0') and val.replace('.', '').isdigit():
+        val = val[:-2]
+
     return val
 
 def load_mapping(csv_path):
