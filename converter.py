@@ -68,17 +68,27 @@ def clean_text(value):
     val = str(value).strip()
     if val in ['#N/A', 'nan', 'NaT', 'None', '']:
         return ''
+    if val.endswith('.0') and val.replace('.', '', 1).isdigit():
+        val = val[:-2]
+    return val
+
+def clean_matchmode(value):
+    val = str(value).strip()
+    if val in ['nan', 'None', '', '0']:
+        return ''
+    if '.' in val:
+        val = val.split('.')[0]
     return val
 
 def load_mapping(csv_path):
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, dtype=str).fillna('')
     df.columns = df.columns.str.strip().str.lower()
     mappings = {}
     for _, row in df.iterrows():
         section = str(row.get('section', '')).strip().lower()
         tag = str(row.get('tag', '')).strip()
         source = str(row.get('source', '')).strip()
-        matchmode = str(row.get('matchmode', '')).strip()
+        matchmode = clean_matchmode(row.get('matchmode', ''))
         if not section or not tag or not source:
             continue
         if section not in mappings:
@@ -117,11 +127,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         h = str(h).upper()
         return re.sub(r'[^A-Z0-9]', '', h)
 
-    raw_headers = list(df.columns)
     df.columns = [norm(c) for c in df.columns]
-    logger.info(f"RAW Excel headers (row 4): {raw_headers}")
-    logger.info(f"NORMALIZED Excel headers: {list(df.columns)}")
-
     for section, entries in mappings.items():
         for m in entries:
             src = norm(m['source'])
@@ -130,8 +136,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             hit = get_close_matches(src, df.columns, n=1, cutoff=0.7)
             if hit:
                 m['source'] = hit[0]
-            else:
-                logger.warning(f"No header match for '{m['source']}' in section '{section}'")
 
     root = ET.Element('transportbookings')
     booking_el = ET.SubElement(root, 'transportbooking')
@@ -140,17 +144,16 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     ws = wb.active
     for m in mappings.get('header', []):
         tag = m['tag']
-        mm = m.get('matchmode') or ''
+        mm = clean_matchmode(m.get('matchmode', ''))
         src = m['source']
         val = ''
         src_up = src.upper()
         if src_up.startswith('CELL'):
-            parts = src_up.split()
-            cell_ref = parts[-1] if len(parts) >= 2 else ''
+            cell_ref = src_up.split()[-1]
             try:
                 val = clean_text(ws[cell_ref].value)
-            except Exception as e:
-                logger.warning(f"Could not read header cell {src}: {e}")
+            except:
+                val = ''
         else:
             val = clean_text(src)
         if val:
@@ -175,7 +178,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     key_cols = [c for c in ['COLLECTIONREFERENCE', 'DELIVERYREFERENCE', 'GOODSDESCRIPTION'] if c in df.columns]
     df_valid = df[df[key_cols].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
-    logger.info(f"Valid shipment rows: {len(df_valid)} (out of {len(df)})")
 
     for _, row in df_valid.iterrows():
         shipment_el = ET.SubElement(shipments_el, 'shipment')
@@ -189,36 +191,40 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         for m in mappings.get('pickup', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
-                attrib = {'matchmode': m['matchmode']} if m.get('matchmode') else {}
+                mm = clean_matchmode(m['matchmode'])
+                attrib = {'matchmode': mm} if mm else {}
                 ET.SubElement(pickup_el, m['tag'], attrib).text = val
 
         delivery_el = ET.SubElement(shipment_el, 'deliveryaddress')
         for m in mappings.get('delivery', []):
             val = clean_text(row.get(m['source'], ''))
             if val:
-                attrib = {'matchmode': m['matchmode']} if m.get('matchmode') else {}
+                mm = clean_matchmode(m['matchmode'])
+                attrib = {'matchmode': mm} if mm else {}
                 ET.SubElement(delivery_el, m['tag'], attrib).text = val
 
         cargo_el = ET.SubElement(shipment_el, 'cargo')
+        added_unitid = False
         unitamount_mm = None
         for m in mappings.get('cargo', []):
             if m['tag'].lower() == 'unitamount':
-                unitamount_mm = m.get('matchmode') or ''
+                unitamount_mm = clean_matchmode(m.get('matchmode', ''))
                 break
         for m in mappings.get('cargo', []):
             tag = m['tag'].lower()
             val = clean_text(row.get(m['source'], ''))
             if not val:
                 continue
-            if tag == 'unitamount':
+            mm = clean_matchmode(m['matchmode'])
+            if tag == 'unitamount' and not added_unitid:
                 attrib_uid = {'matchmode': (unitamount_mm or '1')}
                 ET.SubElement(cargo_el, 'unitid', attrib_uid).text = 'EuroPallet'
-            attrib = {'matchmode': m['matchmode']} if m.get('matchmode') else {}
+                added_unitid = True
+            attrib = {'matchmode': mm} if mm else {}
             ET.SubElement(cargo_el, m['tag'], attrib).text = val
 
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding='utf-8', xml_declaration=True)
-    logger.info(f"XML written successfully: {output_xml}")
 
 def list_xlsx_files(ftp, directory):
     try:
@@ -265,10 +271,8 @@ def main():
             ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
             ftp.set_pasv(True)
-
             current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             new_files = [f for f in current_files if f not in previous_files]
-
             if new_files:
                 logger.info(f"New files detected: {new_files}")
                 for file in new_files:
@@ -286,7 +290,6 @@ def main():
                         break
             else:
                 logger.info("No new files detected.")
-
             previous_files = current_files
         except Exception as e:
             logger.error(f"Unexpected error: {e}")

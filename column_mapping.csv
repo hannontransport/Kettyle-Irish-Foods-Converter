@@ -10,6 +10,6 @@ delivery,city_id,DELIVERYCITY,4
 delivery,deliverytime,DELIVERYTIME,
 delivery,date,UNLOADING,
 cargo,product_id,GOODSDESCRIPTION,1
-cargo,unitamount,EUROPALLET,
 cargo,unitid,EUROPALLET,1
+cargo,unitamount,EUROPALLET,
 shipment,reference,COLUMN P,
