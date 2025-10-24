@@ -11,7 +11,6 @@ from email.mime.text import MIMEText
 from logging.handlers import TimedRotatingFileHandler
 from config import Config
 
-# --- Configuration ---
 WATCH_FOLDER = Config.WATCH_FOLDER
 PROCESSED_FOLDER = Config.PROCESSED_FOLDER
 ERROR_FOLDER = Config.ERROR_FOLDER
@@ -38,7 +37,6 @@ MATCHMODE_RULES = {
     "unit_id": "1"
 }
 
-# --- Logging setup ---
 def setup_logger():
     if not os.path.exists("logs"):
         os.makedirs("logs")
@@ -54,7 +52,6 @@ def setup_logger():
 
 logger = setup_logger()
 
-# --- Email utility ---
 def send_email(subject, body):
     try:
         msg = MIMEMultipart()
@@ -70,7 +67,6 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}")
 
-# --- Helpers ---
 def clean_text(value):
     import datetime
     if pd.isna(value) or str(value).strip() in ["", "nan", "NaT", "None", "#N/A"]:
@@ -112,7 +108,6 @@ def indent(elem, level=0):
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
 
-# --- Main XML creation ---
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
 
@@ -124,7 +119,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     def normalize(h): return re.sub(r"[^A-Z0-9]", "", str(h).upper())
     df.columns = [normalize(c) for c in df.columns]
 
-    # Keep mapping normalized -> raw header text
     norm_to_raw = {normalize(c): str(c).strip() for c in df_raw.columns}
 
     wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -134,7 +128,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     booking_el = ET.SubElement(root, "transportbooking")
     header_reference = ""
 
-    # --- Header section ---
     for m in mappings.get("header", []):
         tag = m["tag"]
         src = m["source"].upper()
@@ -159,7 +152,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
-    # --- Shipment reference mapping ---
     shipment_ref_col = None
     ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
     if ref_map:
@@ -174,7 +166,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     key_columns = [c for c in ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"] if c in df.columns]
     df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
 
-    # --- Identify unit columns dynamically ---
     unit_columns = [c for c in df.columns if "PALLET" in c or "UNIT" in c]
 
     for _, row in df_valid.iterrows():
@@ -186,7 +177,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(shipment_el, "reference").text = shipment_ref
                 ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
-        # Pickup
         pickup_el = ET.SubElement(shipment_el, "pickupaddress")
         for m in mappings.get("pickup", []):
             src_norm = normalize(m["source"])
@@ -196,7 +186,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(pickup_el, m["tag"], attrib).text = val
 
-        # Delivery
         delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
         for m in mappings.get("delivery", []):
             src_norm = normalize(m["source"])
@@ -206,10 +195,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 attrib = {"matchmode": mm} if mm else {}
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
 
-        # Cargo
         cargo_el = ET.SubElement(shipment_el, "cargo")
 
-        # Product
         for m in mappings.get("cargo", []):
             if m["tag"].lower() == "product_id":
                 src_norm = normalize(m["source"])
@@ -219,7 +206,6 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                     ET.SubElement(cargo_el, "product_id", {"matchmode": mm}).text = val
                 break
 
-        # Unit column detection
         for col in unit_columns:
             cell_val = clean_text(row.get(col, ""))
             if cell_val:
@@ -227,13 +213,12 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 mm = get_matchmode("unit_id")
                 ET.SubElement(cargo_el, "unit_id", {"matchmode": mm}).text = unit_header
                 ET.SubElement(cargo_el, "unitamount").text = cell_val
-                break  # use first matching unit column only
+                break 
 
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
 
-# --- FTP utils ---
 def list_xlsx_files(ftp, directory):
     files = []
     def parse_line(line):
@@ -276,7 +261,6 @@ def upload_file(ftp, local_path, remote_path):
         logger.error(f"Error uploading {local_path}: {str(e)}")
         send_email("Kettyle EDI - File Upload Failed", f"Could not upload {local_path}.")
 
-# --- Main loop ---
 def main():
     previous_files = []
     while True:
