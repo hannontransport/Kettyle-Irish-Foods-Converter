@@ -11,6 +11,7 @@ from email.mime.text import MIMEText
 from logging.handlers import TimedRotatingFileHandler
 from config import Config
 
+# --- CONFIG FROM YOUR CONFIG.PY ---
 WATCH_FOLDER = Config.WATCH_FOLDER
 PROCESSED_FOLDER = Config.PROCESSED_FOLDER
 ERROR_FOLDER = Config.ERROR_FOLDER
@@ -29,6 +30,7 @@ FROM_EMAIL = Config.FROM_EMAIL
 TO_EMAIL = Config.TO_EMAIL
 COLUMNS_FILE = Config.COLUMNS_FILE
 
+# matchmode map
 MATCHMODE_RULES = {
     "customer_id": "1",
     "address_id": "1",
@@ -36,6 +38,7 @@ MATCHMODE_RULES = {
     "product_id": "1",
     "unit_id": "1"
 }
+
 
 def setup_logger():
     if not os.path.exists("logs"):
@@ -58,7 +61,9 @@ def setup_logger():
 
     return logger
 
+
 logger = setup_logger()
+
 
 def send_email(subject, body):
     try:
@@ -76,6 +81,7 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}", exc_info=True)
 
+
 def clean_text(value):
     import datetime
     if pd.isna(value) or str(value).strip() in ["", "nan", "NaT", "None", "#N/A"]:
@@ -83,9 +89,11 @@ def clean_text(value):
     if isinstance(value, (datetime.datetime, datetime.date)):
         return value.strftime("%Y-%m-%d")
     val = str(value).strip()
+    # strip Excel-ish 12.0 -> 12
     if val.endswith(".0") and val.replace(".", "", 1).isdigit():
         val = val[:-2]
     return val
+
 
 def load_mapping(csv_path):
     logger.debug(f"Loading mapping from: {csv_path}")
@@ -95,7 +103,8 @@ def load_mapping(csv_path):
     for _, row in df.iterrows():
         section = str(row.get("section", "")).strip().lower()
         tag = str(row.get("tag", "")).strip()
-        source = str(row.get("source", "")).strip().upper()
+        # keep source as-is (we uppercase later where needed)
+        source = str(row.get("source", "")).strip()
         if section and tag and source:
             if section not in mappings:
                 mappings[section] = []
@@ -103,8 +112,10 @@ def load_mapping(csv_path):
     logger.debug(f"Loaded mapping sections: {list(mappings.keys())}")
     return mappings
 
+
 def get_matchmode(tag):
     return MATCHMODE_RULES.get(tag.lower(), "")
+
 
 def indent(elem, level=0):
     i = "\n" + level * "  "
@@ -118,32 +129,34 @@ def indent(elem, level=0):
     else:
         if level and (not elem.tail or not elem.tail.strip()):
             elem.tail = i
+
+
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     import openpyxl, re
 
     logger.info(f"Starting XML write for file: {filepath}")
     mappings = load_mapping(mapping_csv)
 
-    # add spelling fix here
+    # normalize that fixes ADRESS -> ADDRESS
     def normalize(h):
         s = re.sub(r"[^A-Z0-9]", "", str(h).upper())
-        # treat ADRESS as ADDRESS
         s = s.replace("ADRESS", "ADDRESS")
         return s
 
     logger.debug("Reading Excel data...")
-    # header=3 is your current template (row 4 has headers)
+    # your template has headers on row 4 -> header=3
     df_raw = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
     logger.debug(f"Raw Excel columns: {list(df_raw.columns)}")
 
-    # clean and drop fully empty rows
+    # drop empty rows
     df = df_raw.replace(r"^\s*$", "", regex=True).fillna("")
     df = df[~(df.replace("", pd.NA).isna().all(axis=1))]
 
-    # use our normalize with the spelling fix
+    # normalize column names
     df.columns = [normalize(c) for c in df.columns]
     logger.debug(f"Normalized columns: {list(df.columns)}")
 
+    # mapping back to original header text (for unit headers)
     norm_to_raw = {normalize(c): str(c).strip() for c in df_raw.columns}
 
     wb = openpyxl.load_workbook(filepath, data_only=True)
@@ -153,13 +166,13 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     booking_el = ET.SubElement(root, "transportbooking")
     header_reference = ""
 
-    # HEADER
+    # -------- HEADER --------
     logger.debug("Building header section...")
     for m in mappings.get("header", []):
         tag = m["tag"]
-        src = m["source"].upper()
+        src = m["source"]
         val = ""
-        if src.startswith("CELL"):
+        if src.upper().startswith("CELL"):
             cell_ref = src.split()[-1]
             try:
                 val = clean_text(ws[cell_ref].value)
@@ -168,14 +181,15 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 logger.error(f"Could not read cell {cell_ref} for header {tag}: {e}", exc_info=True)
                 val = ""
         else:
+            # treat as constant
             val = clean_text(src)
             logger.debug(f"Header CONST {src} -> {tag} = '{val}'")
         if val:
-            if tag.lower() == "reference":
-                header_reference = val
             mm = get_matchmode(tag)
             attrib = {"matchmode": mm} if mm else {}
             ET.SubElement(booking_el, tag, attrib).text = val
+            if tag.lower() == "reference":
+                header_reference = val
 
     if header_reference:
         ET.SubElement(booking_el, "edireference").text = header_reference
@@ -183,21 +197,25 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
-    # shipment reference column
+    # -------- SHIPMENT REFERENCE SOURCE --------
     shipment_ref_col = None
     ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
     if ref_map:
-        src = ref_map["source"].upper()
-        if src.startswith("COLUMN"):
-            col_letter = src.split()[-1].strip()
+        src = ref_map["source"]
+        src_upper = src.upper()
+        if src_upper.startswith("COLUMN"):
+            col_letter = src_upper.split()[-1].strip()
             col_idx = ord(col_letter) - ord("A")
-            shipment_ref_col = df.columns[col_idx] if len(df.columns) > col_idx else None
-            logger.debug(f"Shipment reference from COLUMN {col_letter} -> normalized column {shipment_ref_col}")
+            if len(df.columns) > col_idx:
+                shipment_ref_col = df.columns[col_idx]
+                logger.debug(f"Shipment reference from COLUMN {col_letter} -> {shipment_ref_col}")
+            else:
+                logger.warning(f"Shipment reference column {col_letter} not found in DataFrame")
         else:
             shipment_ref_col = normalize(src)
-            logger.debug(f"Shipment reference from source {src} -> normalized {shipment_ref_col}")
+            logger.debug(f"Shipment reference from source {src} -> {shipment_ref_col}")
 
-    # key columns
+    # -------- ROW FILTER --------
     candidate_keys = ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"]
     key_columns = [c for c in candidate_keys if c in df.columns]
     logger.debug(f"Key columns found for row validity: {key_columns}")
@@ -213,6 +231,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     unit_columns = [c for c in df.columns if "PALLET" in c or "UNIT" in c]
     logger.debug(f"Detected unit columns: {unit_columns}")
 
+    # -------- BUILD SHIPMENTS --------
     for idx, (_, row) in enumerate(df_valid.iterrows(), start=1):
         logger.debug(f"Processing shipment row {idx}")
         shipment_el = ET.SubElement(shipments_el, "shipment")
@@ -225,8 +244,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(shipment_el, "reference").text = shipment_ref
                 ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
-        # pickup
-        pickup_el = ET.SubElement(shipment_el, "pickupaddress")
+        # --- pickup section ---
+        pickup_el = ET.SubElement(shipment_el, "pickup")
         for m in mappings.get("pickup", []):
             src_norm = normalize(m["source"])
             val = clean_text(row.get(src_norm, ""))
@@ -236,8 +255,8 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(pickup_el, m["tag"], attrib).text = val
                 logger.debug(f"Row {idx} pickup {m['tag']} from {src_norm} = '{val}'")
 
-        # delivery
-        delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
+        # --- delivery section ---
+        delivery_el = ET.SubElement(shipment_el, "delivery")
         for m in mappings.get("delivery", []):
             src_norm = normalize(m["source"])
             val = clean_text(row.get(src_norm, ""))
@@ -247,21 +266,18 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
                 logger.debug(f"Row {idx} delivery {m['tag']} from {src_norm} = '{val}'")
 
-        # cargo
+        # --- cargo section ---
         cargo_el = ET.SubElement(shipment_el, "cargo")
-
-        # product
         for m in mappings.get("cargo", []):
-            if m["tag"].lower() == "product_id":
-                src_norm = normalize(m["source"])
-                val = clean_text(row.get(src_norm, ""))
-                logger.debug(f"Row {idx} cargo product from {src_norm} = '{val}'")
-                if val:
-                    mm = get_matchmode("product_id")
-                    ET.SubElement(cargo_el, "product_id", {"matchmode": mm}).text = val
-                break
+            src_norm = normalize(m["source"])
+            val = clean_text(row.get(src_norm, ""))
+            if val:
+                mm = get_matchmode(m["tag"])
+                attrib = {"matchmode": mm} if mm else {}
+                ET.SubElement(cargo_el, m["tag"], attrib).text = val
+                logger.debug(f"Row {idx} cargo {m['tag']} from {src_norm} = '{val}'")
 
-        # unit columns
+        # auto-detected unit columns
         for col in unit_columns:
             cell_val = clean_text(row.get(col, ""))
             if cell_val:
@@ -272,21 +288,24 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 logger.debug(f"Row {idx} cargo unit: header='{unit_header}', amount='{cell_val}'")
                 break
 
+    # pretty print and write
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
 
 
-
+# ------------- FTP HELPERS -------------
 def list_xlsx_files(ftp, directory):
     logger.debug(f"Listing XLSX files in {directory}")
     files = []
+
     def parse_line(line):
         parts = line.split(";")
         if len(parts) > 1:
             filename = parts[-1].strip()
             if filename.lower().endswith(".xlsx"):
                 files.append(filename)
+
     try:
         ftp.cwd(directory)
         ftp.retrlines("MLSD", parse_line)
@@ -295,6 +314,7 @@ def list_xlsx_files(ftp, directory):
         files = [f for f in ftp.nlst() if f.lower().endswith(".xlsx")]
     logger.debug(f"Found XLSX files: {files}")
     return files
+
 
 def move_file(ftp, from_path, to_directory):
     filename = os.path.basename(from_path)
@@ -307,6 +327,7 @@ def move_file(ftp, from_path, to_directory):
         logger.error(f"Error moving file {from_path}: {str(e)}", exc_info=True)
         send_email("Kettyle EDI - File Move Failed", f"Could not move file {filename}.")
 
+
 def download_file(ftp, remote_path, local_path):
     try:
         logger.debug(f"Downloading {remote_path} -> {local_path}")
@@ -317,6 +338,7 @@ def download_file(ftp, remote_path, local_path):
         send_email("Kettyle EDI - File Download Failed", f"Could not download {remote_path}.")
         raise
 
+
 def upload_file(ftp, local_path, remote_path):
     try:
         logger.debug(f"Uploading {local_path} -> {remote_path}")
@@ -326,6 +348,8 @@ def upload_file(ftp, local_path, remote_path):
         logger.error(f"Error uploading {local_path}: {str(e)}", exc_info=True)
         send_email("Kettyle EDI - File Upload Failed", f"Could not upload {local_path}.")
 
+
+# ------------- MAIN LOOP -------------
 def main():
     previous_files = []
     while True:
@@ -358,6 +382,7 @@ def main():
             else:
                 logger.info("No new files detected.")
             previous_files = current_files
+
         except Exception as e:
             logger.error(f"Unexpected error: {str(e)}", exc_info=True)
             send_email("Kettyle EDI - Unexpected Error", f"Unexpected error occurred: {str(e)}")
@@ -367,7 +392,9 @@ def main():
                     ftp.quit()
             except:
                 pass
+
         time.sleep(POLL_TIME)
+
 
 if __name__ == "__main__":
     main()
