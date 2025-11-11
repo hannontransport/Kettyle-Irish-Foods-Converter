@@ -2,13 +2,12 @@
 header,reference,CELL D2
 header,customer_id,KETTYLEFOODS
 pickup,address_id,COLLECTIONREFERENCE
-pickup,name,COLLECTIONNAMEADDRESS
+pickup,name,COLLECTIONNAMEADRESS
 pickup,date,LOADING
 delivery,address_id,DELIVERYREFERENCE
-delivery,address1,DELIVERYNAMEADDRESS
+delivery,address1,DELIVERYNAMEADRESS
 delivery,city_id,DELIVERYCITY
 delivery,deliverytime,DELIVERYTIME
 delivery,date,UNLOADING
 cargo,product_id,GOODSDESCRIPTION
-cargo,unitamount,EUROPALLET
-shipment,reference,COLUMN P
+shipment,reference,DELIVERYREFERENCE

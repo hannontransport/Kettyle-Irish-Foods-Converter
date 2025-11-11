@@ -11,79 +11,63 @@ from email.mime.text import MIMEText
 from logging.handlers import TimedRotatingFileHandler
 from config import Config
 
-# --- config ---
 WATCH_FOLDER = Config.WATCH_FOLDER
 PROCESSED_FOLDER = Config.PROCESSED_FOLDER
 ERROR_FOLDER = Config.ERROR_FOLDER
-
 FTP_HOST = Config.FTP_HOST
 FTP_PORT = Config.FTP_PORT
 FTP_USERNAME = Config.FTP_USERNAME
 FTP_PASSWORD = Config.FTP_PASSWORD
-
 DOWNLOAD_FOLDER = Config.DOWNLOAD_FOLDER
 UPLOAD_FOLDER = Config.UPLOAD_FOLDER
-
 POLL_TIME = Config.POLL_TIME
-
 SMTP_SERVER = Config.SMTP_SERVER
 SMTP_PORT = Config.SMTP_PORT
 SMTP_USERNAME = Config.SMTP_USERNAME
 SMTP_PASSWORD = Config.SMTP_PASSWORD
-
 FROM_EMAIL = Config.FROM_EMAIL
 TO_EMAIL = Config.TO_EMAIL
-
 COLUMNS_FILE = Config.COLUMNS_FILE
 
-# defaults like your original
-DEFAULT_MATCHMODE_RULES = {
+MATCHMODE_RULES = {
     "customer_id": "1",
     "address_id": "1",
     "city_id": "4",
     "product_id": "1",
-    "unit_id": "1",
-    "country_id": "2"
+    "unit_id": "1"
 }
 
-# ------------------------------------------------
-# logging
-# ------------------------------------------------
 def setup_logger():
     if not os.path.exists("logs"):
         os.makedirs("logs")
+
     logger = logging.getLogger(__name__)
     logger.setLevel(logging.DEBUG)
-    handler = TimedRotatingFileHandler(
-        "logs/KettyleIrishFoodsConverter.log",
-        when="midnight",
-        interval=1,
-        backupCount=30,
-        encoding="utf-8",
-    )
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logger.addHandler(handler)
 
-    console = logging.StreamHandler()
-    console.setLevel(logging.DEBUG)
-    console.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
-    logger.addHandler(console)
+    file_handler = TimedRotatingFileHandler(
+        "logs/KettyleIrishFoodsConverter.log",
+        when="midnight", interval=1, backupCount=30, encoding="utf-8"
+    )
+    file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(file_handler)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.DEBUG)
+    console_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(console_handler)
 
     return logger
 
 logger = setup_logger()
 
-# ------------------------------------------------
-# email
-# ------------------------------------------------
 def send_email(subject, body):
     try:
+        logger.debug(f"Sending email: {subject}")
         msg = MIMEMultipart()
         msg["From"] = FROM_EMAIL
         msg["To"] = TO_EMAIL
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain"))
-
         server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
         server.login(SMTP_USERNAME, SMTP_PASSWORD)
@@ -92,219 +76,224 @@ def send_email(subject, body):
     except Exception as e:
         logger.error(f"Email send failed: {e}", exc_info=True)
 
-# ------------------------------------------------
-# helpers
-# ------------------------------------------------
-def clean_text(val):
-    """Return a trimmed string or '' – this is where we kill vlookup blanks."""
-    if pd.isna(val):
+def clean_text(value):
+    import datetime
+    if pd.isna(value) or str(value).strip() in ["", "nan", "NaT", "None", "#N/A"]:
         return ""
-    s = str(val).strip()
-    if s in ("", "nan", "None", "NaT", "#N/A"):
-        return ""
-    return s
+    if isinstance(value, (datetime.datetime, datetime.date)):
+        return value.strftime("%Y-%m-%d")
+    val = str(value).strip()
+    if val.endswith(".0") and val.replace(".", "", 1).isdigit():
+        val = val[:-2]
+    return val
 
-def load_column_mapping(path=COLUMNS_FILE):
-    """
-    Load mapping like your working (koberg) version:
-    section, column_index, xml_tag, matchmode, row (optional)
-    """
-    logger.debug(f"Loading column mapping from {path}")
-    df = pd.read_csv(path, encoding="utf-8-sig").fillna("")
+def load_mapping(csv_path):
+    logger.debug(f"Loading mapping from: {csv_path}")
+    df = pd.read_csv(csv_path, dtype=str).fillna("")
     df.columns = df.columns.str.strip().str.lower()
-
-    # we’ll support these sections
-    mappings = {
-        "header": [],
-        "ref": [],
-        "pickup": [],
-        "delivery": [],
-        "cargo": [],
-        "unit_id": [],
-    }
+    mappings = {}
     for _, row in df.iterrows():
-        sec = row.get("section", "").strip().lower()
-        if sec not in mappings:
-            continue
-
-        # get column index (must be int)
-        try:
-            col_idx = int(float(row.get("column_index", 0)))
-        except Exception:
-            continue
-
-        item = {
-            "col": col_idx,
-            "tag": str(row.get("xml_tag", "")).strip(),
-        }
-
-        # optional row
-        if row.get("row", ""):
-            try:
-                item["row"] = int(float(row["row"]))
-            except Exception:
-                pass
-
-        # optional matchmode
-        mm = str(row.get("matchmode", "")).strip()
-        if mm:
-            item["matchmode"] = mm
-
-        mappings[sec].append(item)
-
-    logger.debug(f"Loaded mapping sections: { {k: len(v) for k,v in mappings.items()} }")
+        section = str(row.get("section", "")).strip().lower()
+        tag = str(row.get("tag", "")).strip()
+        source = str(row.get("source", "")).strip().upper()
+        if section and tag and source:
+            if section not in mappings:
+                mappings[section] = []
+            mappings[section].append({"tag": tag, "source": source})
+    logger.debug(f"Loaded mapping sections: {list(mappings.keys())}")
     return mappings
 
-def get_attrib(item):
-    tag = item.get("tag", "").lower()
-    # CSV wins
-    mm = item.get("matchmode")
-    if not mm and tag in DEFAULT_MATCHMODE_RULES:
-        mm = DEFAULT_MATCHMODE_RULES[tag]
-    return {"matchmode": mm} if mm else {}
+def get_matchmode(tag):
+    return MATCHMODE_RULES.get(tag.lower(), "")
 
-# ------------------------------------------------
-# XML writer (index-based like your working one)
-# ------------------------------------------------
+def indent(elem, level=0):
+    i = "\n" + level * "  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        for child in elem:
+            indent(child, level + 1)
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
 def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
-    logger.info(f"Converting Excel -> XML for {filepath}")
-    # read raw excel – no header
-    df = pd.read_excel(filepath, header=None, engine="openpyxl")
-    logger.debug(f"Excel shape: {df.shape}")
+    import openpyxl, re
 
-    mappings = load_column_mapping(mapping_csv)
+    logger.info(f"Starting XML write for file: {filepath}")
+    mappings = load_mapping(mapping_csv)
 
-    # make sure invalid columns are removed from mapping
-    max_cols = df.shape[1]
-    for sec, entries in mappings.items():
-        valid = [e for e in entries if 0 <= e["col"] < max_cols]
-        mappings[sec] = valid
+    # add spelling fix here
+    def normalize(h):
+        s = re.sub(r"[^A-Z0-9]", "", str(h).upper())
+        # treat ADRESS as ADDRESS
+        s = s.replace("ADRESS", "ADDRESS")
+        return s
+
+    logger.debug("Reading Excel data...")
+    # header=3 is your current template (row 4 has headers)
+    df_raw = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
+    logger.debug(f"Raw Excel columns: {list(df_raw.columns)}")
+
+    # clean and drop fully empty rows
+    df = df_raw.replace(r"^\s*$", "", regex=True).fillna("")
+    df = df[~(df.replace("", pd.NA).isna().all(axis=1))]
+
+    # use our normalize with the spelling fix
+    df.columns = [normalize(c) for c in df.columns]
+    logger.debug(f"Normalized columns: {list(df.columns)}")
+
+    norm_to_raw = {normalize(c): str(c).strip() for c in df_raw.columns}
+
+    wb = openpyxl.load_workbook(filepath, data_only=True)
+    ws = wb.active
 
     root = ET.Element("transportbookings")
     booking_el = ET.SubElement(root, "transportbooking")
+    header_reference = ""
 
-    # HEADER (usually fixed rows, e.g. row 0 or row 1)
-    for item in mappings["header"]:
-        row_idx = item.get("row", 0)
+    # HEADER
+    logger.debug("Building header section...")
+    for m in mappings.get("header", []):
+        tag = m["tag"]
+        src = m["source"].upper()
         val = ""
-        try:
-            val = clean_text(df.iat[row_idx, item["col"]])
-        except Exception:
-            val = ""
-        if not val:
-            continue
-        attrib = get_attrib(item)
-        ET.SubElement(booking_el, item["tag"], attrib).text = val
-        logger.debug(f"header: {item['tag']} = {val}")
+        if src.startswith("CELL"):
+            cell_ref = src.split()[-1]
+            try:
+                val = clean_text(ws[cell_ref].value)
+                logger.debug(f"Header CELL {cell_ref} -> {tag} = '{val}'")
+            except Exception as e:
+                logger.error(f"Could not read cell {cell_ref} for header {tag}: {e}", exc_info=True)
+                val = ""
+        else:
+            val = clean_text(src)
+            logger.debug(f"Header CONST {src} -> {tag} = '{val}'")
+        if val:
+            if tag.lower() == "reference":
+                header_reference = val
+            mm = get_matchmode(tag)
+            attrib = {"matchmode": mm} if mm else {}
+            ET.SubElement(booking_el, tag, attrib).text = val
+
+    if header_reference:
+        ET.SubElement(booking_el, "edireference").text = header_reference
+        logger.debug(f"Header reference set to: {header_reference}")
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
-    # rows start at 2 in your working script – keep the same
-    for i in range(2, len(df)):
-        row = df.iloc[i]
+    # shipment reference column
+    shipment_ref_col = None
+    ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
+    if ref_map:
+        src = ref_map["source"].upper()
+        if src.startswith("COLUMN"):
+            col_letter = src.split()[-1].strip()
+            col_idx = ord(col_letter) - ord("A")
+            shipment_ref_col = df.columns[col_idx] if len(df.columns) > col_idx else None
+            logger.debug(f"Shipment reference from COLUMN {col_letter} -> normalized column {shipment_ref_col}")
+        else:
+            shipment_ref_col = normalize(src)
+            logger.debug(f"Shipment reference from source {src} -> normalized {shipment_ref_col}")
 
-        # find a reference for this row
-        ref_val = ""
-        for item in mappings.get("ref", []):
-            cand = clean_text(row[item["col"]])
-            if cand and cand.lower() != "shipment number":
-                ref_val = cand
-                break
+    # key columns
+    candidate_keys = ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"]
+    key_columns = [c for c in candidate_keys if c in df.columns]
+    logger.debug(f"Key columns found for row validity: {key_columns}")
 
-        # gather all possible values for this row from pickup/delivery/cargo/unit
-        # so we can skip truly empty rows (your “ignore anything that has no text” bit)
-        row_has_data = False
+    if key_columns:
+        df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
+        logger.debug(f"Valid rows count (after key-column filter): {len(df_valid)}")
+    else:
+        logger.warning("No expected key columns found in sheet; processing ALL rows.")
+        df_valid = df
 
-        # quick probe
-        for sec_name in ("pickup", "delivery", "cargo", "unit_id"):
-            for item in mappings.get(sec_name, []):
-                if clean_text(row[item["col"]]):
-                    row_has_data = True
-                    break
-            if row_has_data:
-                break
+    # detect unit-like columns
+    unit_columns = [c for c in df.columns if "PALLET" in c or "UNIT" in c]
+    logger.debug(f"Detected unit columns: {unit_columns}")
 
-        # if no ref AND no data, skip
-        if not ref_val and not row_has_data:
-            logger.debug(f"Row {i}: empty after cleaning, skipping.")
-            continue
-
+    for idx, (_, row) in enumerate(df_valid.iterrows(), start=1):
+        logger.debug(f"Processing shipment row {idx}")
         shipment_el = ET.SubElement(shipments_el, "shipment")
 
-        # write ref even if blank (but usually we have one)
-        ET.SubElement(shipment_el, "edireference").text = ref_val
-        ET.SubElement(shipment_el, "reference").text = ref_val
-        logger.debug(f"Row {i}: created shipment, ref='{ref_val}'")
+        # shipment reference
+        if shipment_ref_col:
+            shipment_ref = clean_text(row.get(shipment_ref_col, ""))
+            logger.debug(f"Row {idx} shipment_ref_col={shipment_ref_col} value='{shipment_ref}'")
+            if shipment_ref:
+                ET.SubElement(shipment_el, "reference").text = shipment_ref
+                ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
         # pickup
         pickup_el = ET.SubElement(shipment_el, "pickupaddress")
-        for item in mappings["pickup"]:
-            val = clean_text(row[item["col"]])
-            if not val:
-                continue
-            attrib = get_attrib(item)
-            ET.SubElement(pickup_el, item["tag"], attrib).text = val
-            logger.debug(f"Row {i}: pickup {item['tag']} = {val}")
+        for m in mappings.get("pickup", []):
+            src_norm = normalize(m["source"])
+            val = clean_text(row.get(src_norm, ""))
+            if val:
+                mm = get_matchmode(m["tag"])
+                attrib = {"matchmode": mm} if mm else {}
+                ET.SubElement(pickup_el, m["tag"], attrib).text = val
+                logger.debug(f"Row {idx} pickup {m['tag']} from {src_norm} = '{val}'")
 
         # delivery
         delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
-        for item in mappings["delivery"]:
-            val = clean_text(row[item["col"]])
-            if not val:
-                continue
-            attrib = get_attrib(item)
-            ET.SubElement(delivery_el, item["tag"], attrib).text = val
-            logger.debug(f"Row {i}: delivery {item['tag']} = {val}")
+        for m in mappings.get("delivery", []):
+            src_norm = normalize(m["source"])
+            val = clean_text(row.get(src_norm, ""))
+            if val:
+                mm = get_matchmode(m["tag"])
+                attrib = {"matchmode": mm} if mm else {}
+                ET.SubElement(delivery_el, m["tag"], attrib).text = val
+                logger.debug(f"Row {idx} delivery {m['tag']} from {src_norm} = '{val}'")
 
         # cargo
         cargo_el = ET.SubElement(shipment_el, "cargo")
-        for item in mappings["cargo"]:
-            val = clean_text(row[item["col"]])
-            if not val:
-                continue
-            attrib = get_attrib(item)
-            ET.SubElement(cargo_el, item["tag"], attrib).text = val
-            logger.debug(f"Row {i}: cargo {item['tag']} = {val}")
 
-        # unit(s)
-        unit_entries = [item for item in mappings.get("unit_id", []) if clean_text(row[item["col"]])]
-        if len(unit_entries) == 1:
-            item = unit_entries[0]
-            ET.SubElement(cargo_el, "unit_id", {"matchmode": "1"}).text = item["tag"]
-            ET.SubElement(cargo_el, "unitamount").text = clean_text(row[item["col"]])
-            logger.debug(f"Row {i}: single unit {item['tag']} = {clean_text(row[item['col']])}")
-        elif len(unit_entries) > 1:
-            gls = ET.SubElement(cargo_el, "goodslines")
-            for item in unit_entries:
-                gl = ET.SubElement(gls, "goodsline")
-                ET.SubElement(gl, "unit_id", {"matchmode": "1"}).text = item["tag"]
-                ET.SubElement(gl, "unitamount").text = clean_text(row[item["col"]])
-                logger.debug(f"Row {i}: goodsline unit {item['tag']} = {clean_text(row[item['col']])}")
+        # product
+        for m in mappings.get("cargo", []):
+            if m["tag"].lower() == "product_id":
+                src_norm = normalize(m["source"])
+                val = clean_text(row.get(src_norm, ""))
+                logger.debug(f"Row {idx} cargo product from {src_norm} = '{val}'")
+                if val:
+                    mm = get_matchmode("product_id")
+                    ET.SubElement(cargo_el, "product_id", {"matchmode": mm}).text = val
+                break
 
-    # write xml
+        # unit columns
+        for col in unit_columns:
+            cell_val = clean_text(row.get(col, ""))
+            if cell_val:
+                unit_header = norm_to_raw.get(col, col)
+                mm = get_matchmode("unit_id")
+                ET.SubElement(cargo_el, "unit_id", {"matchmode": mm}).text = unit_header
+                ET.SubElement(cargo_el, "unitamount").text = cell_val
+                logger.debug(f"Row {idx} cargo unit: header='{unit_header}', amount='{cell_val}'")
+                break
+
+    indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
 
-# ------------------------------------------------
-# FTP helpers
-# ------------------------------------------------
-def list_xlsx_files(ftp, directory):
-    files = []
 
+
+def list_xlsx_files(ftp, directory):
+    logger.debug(f"Listing XLSX files in {directory}")
+    files = []
     def parse_line(line):
         parts = line.split(";")
         if len(parts) > 1:
             filename = parts[-1].strip()
             if filename.lower().endswith(".xlsx"):
                 files.append(filename)
-
     try:
         ftp.cwd(directory)
         ftp.retrlines("MLSD", parse_line)
-    except Exception as e:
-        logger.error(f"MLSD failed, falling back to NLST: {e}")
+    except Exception:
+        logger.debug("MLSD failed, falling back to NLST", exc_info=True)
         files = [f for f in ftp.nlst() if f.lower().endswith(".xlsx")]
-
+    logger.debug(f"Found XLSX files: {files}")
     return files
 
 def move_file(ftp, from_path, to_directory):
@@ -312,31 +301,31 @@ def move_file(ftp, from_path, to_directory):
     try:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_name = f"{timestamp}_{filename}"
+        logger.debug(f"Moving remote file {from_path} -> {to_directory}/{new_name}")
         ftp.rename(from_path, f"{to_directory}/{new_name}")
     except Exception as e:
-        logger.error(f"Error moving file {from_path}: {e}", exc_info=True)
+        logger.error(f"Error moving file {from_path}: {str(e)}", exc_info=True)
         send_email("Kettyle EDI - File Move Failed", f"Could not move file {filename}.")
 
 def download_file(ftp, remote_path, local_path):
     try:
+        logger.debug(f"Downloading {remote_path} -> {local_path}")
         with open(local_path, "wb") as f:
             ftp.retrbinary(f"RETR {remote_path}", f.write)
     except Exception as e:
-        logger.error(f"Error downloading {remote_path}: {e}", exc_info=True)
+        logger.error(f"Error downloading {remote_path}: {str(e)}", exc_info=True)
         send_email("Kettyle EDI - File Download Failed", f"Could not download {remote_path}.")
         raise
 
 def upload_file(ftp, local_path, remote_path):
     try:
+        logger.debug(f"Uploading {local_path} -> {remote_path}")
         with open(local_path, "rb") as f:
             ftp.storbinary(f"STOR {remote_path}", f)
     except Exception as e:
-        logger.error(f"Error uploading {local_path}: {e}", exc_info=True)
+        logger.error(f"Error uploading {local_path}: {str(e)}", exc_info=True)
         send_email("Kettyle EDI - File Upload Failed", f"Could not upload {local_path}.")
 
-# ------------------------------------------------
-# main loop
-# ------------------------------------------------
 def main():
     previous_files = []
     while True:
@@ -347,6 +336,7 @@ def main():
             ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
             ftp.login(FTP_USERNAME, FTP_PASSWORD)
             ftp.set_pasv(True)
+            logger.debug("FTP connected and in PASV mode")
 
             current_files = list_xlsx_files(ftp, WATCH_FOLDER)
             new_files = [f for f in current_files if f not in previous_files]
@@ -354,31 +344,29 @@ def main():
             if new_files:
                 logger.info(f"New files detected: {new_files}")
                 for file in new_files:
-                    remote_path = f"{WATCH_FOLDER}/{file}"
-                    local_path = f"{DOWNLOAD_FOLDER}/{file}"
                     try:
+                        remote_path = f"{WATCH_FOLDER}/{file}"
+                        local_path = f"{DOWNLOAD_FOLDER}/{file}"
                         download_file(ftp, remote_path, local_path)
                         xml_output = os.path.splitext(local_path)[0] + ".xml"
                         write_xml(local_path, xml_output)
                         upload_file(ftp, xml_output, f"{UPLOAD_FOLDER}/{os.path.basename(xml_output)}")
                         move_file(ftp, remote_path, PROCESSED_FOLDER)
                     except Exception as e:
-                        logger.error(f"Processing stopped for {file}: {e}", exc_info=True)
+                        logger.error(f"Processing file {file} failed: {str(e)}", exc_info=True)
                         move_file(ftp, remote_path, ERROR_FOLDER)
             else:
                 logger.info("No new files detected.")
-
             previous_files = current_files
         except Exception as e:
-            logger.error(f"Unexpected error: {e}", exc_info=True)
-            send_email("Kettyle EDI - Unexpected Error", f"Unexpected error occurred: {e}")
+            logger.error(f"Unexpected error: {str(e)}", exc_info=True)
+            send_email("Kettyle EDI - Unexpected Error", f"Unexpected error occurred: {str(e)}")
         finally:
             try:
                 if ftp:
                     ftp.quit()
             except:
                 pass
-
         time.sleep(POLL_TIME)
 
 if __name__ == "__main__":
