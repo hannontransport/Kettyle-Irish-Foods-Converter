@@ -129,13 +129,16 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     df_raw = pd.read_excel(filepath, sheet_name=0, engine="openpyxl", header=3)
     logger.debug(f"Raw Excel columns: {list(df_raw.columns)}")
 
-    # clean and drop empty rows (fixed to avoid applymap warning)
+    # clean and drop fully empty rows
     df = df_raw.replace(r"^\s*$", "", regex=True).fillna("")
     df = df[~(df.replace("", pd.NA).isna().all(axis=1))]
 
     def normalize(h): return re.sub(r"[^A-Z0-9]", "", str(h).upper())
     df.columns = [normalize(c) for c in df.columns]
     logger.debug(f"Normalized columns: {list(df.columns)}")
+
+    # show a preview so we know what we actually have
+    logger.debug(f"First 5 rows (normalized):\n{df.head(5).to_string()}")
 
     norm_to_raw = {normalize(c): str(c).strip() for c in df_raw.columns}
 
@@ -146,6 +149,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     booking_el = ET.SubElement(root, "transportbooking")
     header_reference = ""
 
+    # HEADER
     logger.debug("Building header section...")
     for m in mappings.get("header", []):
         tag = m["tag"]
@@ -175,6 +179,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
 
     shipments_el = ET.SubElement(booking_el, "shipments")
 
+    # shipment reference column (same as before)
     shipment_ref_col = None
     ref_map = next((m for m in mappings.get("shipment", []) if m["tag"].lower() == "reference"), None)
     if ref_map:
@@ -188,12 +193,21 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
             shipment_ref_col = normalize(src)
             logger.debug(f"Shipment reference from source {src} -> normalized {shipment_ref_col}")
 
-    key_columns = [c for c in ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"] if c in df.columns]
-    logger.debug(f"Key columns for row validity: {key_columns}")
+    # --- THIS WAS THE PROBLEM PART ---
+    # try to use sensible key columns, but don't drop everything if we don't find them
+    candidate_keys = ["COLLECTIONREFERENCE", "DELIVERYREFERENCE", "GOODSDESCRIPTION"]
+    key_columns = [c for c in candidate_keys if c in df.columns]
+    logger.debug(f"Key columns found for row validity: {key_columns}")
 
-    df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
-    logger.debug(f"Valid rows count: {len(df_valid)}")
+    if key_columns:
+        df_valid = df[df[key_columns].apply(lambda r: any(clean_text(v) for v in r), axis=1)]
+        logger.debug(f"Valid rows count (after key-column filter): {len(df_valid)}")
+    else:
+        # no expected key columns in sheet — process all rows
+        logger.warning("No expected key columns found in sheet; processing ALL rows.")
+        df_valid = df
 
+    # detect unit-like columns
     unit_columns = [c for c in df.columns if "PALLET" in c or "UNIT" in c]
     logger.debug(f"Detected unit columns: {unit_columns}")
 
@@ -201,6 +215,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
         logger.debug(f"Processing shipment row {idx}")
         shipment_el = ET.SubElement(shipments_el, "shipment")
 
+        # shipment reference
         if shipment_ref_col:
             shipment_ref = clean_text(row.get(shipment_ref_col, ""))
             logger.debug(f"Row {idx} shipment_ref_col={shipment_ref_col} value='{shipment_ref}'")
@@ -208,6 +223,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(shipment_el, "reference").text = shipment_ref
                 ET.SubElement(shipment_el, "edireference").text = shipment_ref
 
+        # pickup
         pickup_el = ET.SubElement(shipment_el, "pickupaddress")
         for m in mappings.get("pickup", []):
             src_norm = normalize(m["source"])
@@ -218,6 +234,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(pickup_el, m["tag"], attrib).text = val
                 logger.debug(f"Row {idx} pickup {m['tag']} from {src_norm} = '{val}'")
 
+        # delivery
         delivery_el = ET.SubElement(shipment_el, "deliveryaddress")
         for m in mappings.get("delivery", []):
             src_norm = normalize(m["source"])
@@ -228,8 +245,10 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                 ET.SubElement(delivery_el, m["tag"], attrib).text = val
                 logger.debug(f"Row {idx} delivery {m['tag']} from {src_norm} = '{val}'")
 
+        # cargo
         cargo_el = ET.SubElement(shipment_el, "cargo")
 
+        # product
         for m in mappings.get("cargo", []):
             if m["tag"].lower() == "product_id":
                 src_norm = normalize(m["source"])
@@ -240,6 +259,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
                     ET.SubElement(cargo_el, "product_id", {"matchmode": mm}).text = val
                 break
 
+        # unit columns
         for col in unit_columns:
             cell_val = clean_text(row.get(col, ""))
             if cell_val:
@@ -253,6 +273,7 @@ def write_xml(filepath, output_xml, mapping_csv=COLUMNS_FILE):
     indent(root)
     ET.ElementTree(root).write(output_xml, encoding="utf-8", xml_declaration=True)
     logger.info(f"XML written successfully: {output_xml}")
+
 
 def list_xlsx_files(ftp, directory):
     logger.debug(f"Listing XLSX files in {directory}")
