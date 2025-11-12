@@ -1,4 +1,4 @@
-# Impluse-Plants-Converter
+# Kettyle-Irish-Foods-Converter
 
 A Python tool to convert Kettyle Irish Foods Excel to XML 
 
