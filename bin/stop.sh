@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Define the path to the PID file
-PID_FILE="/home/jlamont/Kettyle-Irish-Foods-Converter/bin/pid_file.pid"
+PID_FILE="/home/jlamont//Kettyle-Irish-Foods-Converter/bin/pid_file.pid"
 
 # Check if the PID file exists
 if [ ! -f $PID_FILE ]; then
